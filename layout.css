@@ -22,6 +22,16 @@
  *   所以两块默认各自居中在自己那半边、中间空一大截。
  *   改成 #time 靠右、#main 靠左，两块才会在中线处贴成一组；
  *   竖线就画在 #time 的右边缘上，视觉上正好落在两块中间。
+ *
+ * 【踩过的坑：只改盒子的 justify-self 不够，还要改 text-align】
+ *   第一版只写了 `justify-self`，量出来「两块盒子边缘都在 720、贴得死死的」，
+ *   但看上去仍然隔得远：因为上游 `_global.css:107` 给 body 设了 `text-align: center`，
+ *   #greetings 又带 `min-width: 300px`（main.css:14），于是文字被推到盒子中间——
+ *   #main 盒子从 720 起，可「下午好」实际起笔在 **827**，凭空多出 107px 空白。
+ *   而 #time-container / #tempContainer 都是 inline-flex，它们的落位也由父级
+ *   text-align 决定，不是自己说了算。
+ *   → 教训：判断「两块离得远不远」必须量**文字**，不能只量**盒子**。
+ *     元素级数值见 shot_live.js 的 dump（#greeting / #current 的 rect 才是真相）。
  * ---------------------------------------------------------------------------
  */
 
@@ -43,7 +53,11 @@
 /* 时间：靠右，右边缘画竖线 */
 #time {
     justify-self: end;
-    padding-right: 0.75em;
+    /* 上游 _global.css:107 给 body 设了 text-align:center，所有组件默认居中。
+       #time-container / #tempContainer 都是 inline-flex，落位由父级 text-align 决定，
+       所以必须显式改对齐，否则「盒子贴线、文字居中」，凭空多出一截空白。 */
+    text-align: right;
+    padding-right: 0.6em;
     /* 竖线要「贯穿两块」，而 #time 自身内容比天气块矮（9x vs 11x px）。
        上下各补一点 padding 把边框撑到与天气块齐平，再靠 align-self:center 整体居中，
        文字位置不受影响（padding 是对称的）。 */
@@ -55,5 +69,9 @@
 /* 天气/问候：靠左，与竖线保持同样的呼吸间距 */
 #main {
     justify-self: start;
-    padding-left: 0.75em;
+    /* ★ 关键：上游是 text-align:center，会把「下午好」和天气文字推到盒子中间。
+       #greetings 有 min-width:300px，文字被挤到 827 才起笔，离竖线凭空 100px。
+       改左对齐后整块贴线，这才是「紧凑」的来源。 */
+    text-align: left;
+    padding-left: 0.6em;
 }

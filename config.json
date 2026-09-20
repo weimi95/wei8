@@ -60,7 +60,7 @@
     "city": "泉州",
     "unit": "metric",
     "show_unit": true,
-    "geolocation": "off",
+    "geolocation": "approximate",
     "forecast": "auto",
     "temperature": "actual",
     "moreinfo": "custom",
