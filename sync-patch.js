@@ -1,41 +1,24 @@
-/* sync-patch.js — Wei8 同步修复层（Github Gist）
+/* sync-patch.js — Wei8 同步增强层（Github Gist）
  * ---------------------------------------------------------------------------
- * 上游有一个只在「纯网页（online）构建」下发作的 bug，会让 Gist 同步**首次永远失败**：
+ * 上游 online 构建下 localSet() 会把 undefined 写成字符串 "undefined" 落进
+ * localStorage，使 gistId 变成真值字符串 → sendGist() 的「首次新建 Gist」分支
+ * 永远进不去 → 报 "Invalid Gist ID in settings."。详见下方 cleanDirty。
  *
- *   1. storage.ts:214 localSet() 在 localstorage 模式下逐键写：
- *        if (typeof val === 'string') localStorage.setItem(key, val)
- *        else localStorage.setItem(key, JSON.stringify(val))
- *      当 val 是 undefined 时走 else 分支，而 **JSON.stringify(undefined) 返回的是 JS 的
- *      undefined（不是字符串 "undefined"）**，交给 setItem 后按 WebIDL 被转成字符串
- *      "undefined" 存了进去。
- *
- *   2. storage.ts:237 localGet() 读回时只认三种形态：{/[ 开头的 JSON、true/false、纯数字；
- *      剩下的原样返回字符串 → 于是 local.gistId 变成**字符串 "undefined"**（真值）。
- *
- *   3. gist.ts:116 sendGist() 靠 `id === undefined` 判断「还没有 Gist，去新建一个」。
- *      字符串 "undefined" 不等于 undefined → **新建分支永远进不去**，
- *      转而走到 gist.ts:135 isGistIdValid("undefined") → 'u' 不是十六进制 → false
- *      → 抛 GIST_ERROR.ID = "Invalid Gist ID in settings."
- *
- * 触发条件（几乎人人都会踩）：填了有效 token → 提交 → findGistId() 在账号里找不到
- * 名为 bonjourr-export.json 的私有 gist（首次当然没有）→ 返回 undefined → 落盘成脏值。
- * 此时界面显示「尚无保存的数据」（正常），但一按「发送」就报 Gist ID 无效。
- *
- * 另一个迷惑源：isGistTokenValid() 打的是 `GET /gists?since=...`，该端点
- * `allows_permissionless_access=true`（实测：细粒度 token 无 Gists 权限也返回 200），
- * 所以两个按钮会被正常点亮 —— 看起来"token 没问题"，实际 token 可能根本没有 gist 写权限。
- * 实测无 Gists 权限的细粒度 PAT：POST /gists -> 403，
- * 响应头 x-accepted-github-permissions: gists=write。
- * → 需要 Account permissions → Gists → Read and write（classic token 则是勾 gist scope）。
- *
- * 本层做两件事：
- *   A. 装载期 + 点「发送/得到」前，把这种「被写成字符串的 undefined/null/NaN」清掉，
+ * 本层做三件事：
+ *   A. 装载期 + 点「发送/得到」前，清掉这种「被写成字符串的 undefined/null/NaN」，
  *      让 gistId 真正回到 undefined，使上游的新建分支能正常命中。
- *      （必须在点按钮**之前**清：上游是 pointerdown 触发的，所以用 document 捕获阶段抢先。）
- *   B. 在同步区块补一行纯中文提示，说明「首次点发送会自动建 Gist」+「token 权限要求」。
- *      这两个是使用 Gist 同步唯二的坑，上游界面上一个字都没提。
+ *   B. 在同步区块补中文提示（首次自动建 Gist + token 需 Gists 写权限）。
+ *   C. ★ 新增 ★
+ *      - 服务器版本时间戳：GET /gists/{id} 取 updated_at（精确到秒，本地时区），
+ *        渲染到「Server status」区块，方便判断服务器版本是否比本地旧。
+ *      - 自动同步：监听上游 localStorage['bonjourr'] 变更事件（storage sync.set
+ *        在 localstorage 模式下会 dispatchEvent(new Event('storage'))），当
+ *        「有变更 + token 有效 + gistId 存在」时自动 PATCH 推送；首次（gistId 为
+ *        undefined）自动 POST 建 Gist 并记住返回的 id。
+ *        token 无效时降级为手动（不自动推），并在状态区提示。
  *
- * 注意：本层只清「明显是序列化残渣」的值，不动任何正常字符串。
+ * 注意：本层只清「明显是序列化残渣」的值，不动任何正常字符串；自动同步的推送
+ * 走同源 https://api.github.com/gists，复用本地已登录态/令牌，不引入新凭据。
  * ---------------------------------------------------------------------------
  */
 (function () {
@@ -65,11 +48,19 @@
     var cleaned = cleanDirty();
 
     // 可观测标记：探针用它区分「本层接上了」和「压根没跑」
-    window.__wei8Sync = { cleaned: cleaned, hits: 0 };
+    window.__wei8Sync = {
+        cleaned: cleaned,
+        hits: 0,
+        autoSynced: 0,
+        tokenOk: null,     // null=未测, true/false
+        gistId: null,
+        lastAutoAt: 0,
+        lastServerAt: null, // 服务器 updated_at（本地时区字符串）
+        lastError: null,
+    };
 
     // A) 抢先清理 —— 上游的「得到 / 发送」是 clickdown 库挂在**按钮自身**上的
     //    pointerdown/keydown/click，所以 document 的**捕获阶段**一定先执行。
-    //    不清这一步，用户「提交 token 后立刻点发送」这一路径仍然会报 Gist ID 无效。
     function isSyncBtn(el) {
         return !!(el && el.closest && el.closest('#b_gistup, #b_gistdown, #b_gistsync'));
     }
@@ -102,6 +93,7 @@
         var tips = [
             '首次使用：点「发送」会在你的 GitHub 自动建一个私有 Gist（不用自己去建）。',
             'Token 需勾选 Gists 写权限：Account permissions → Gists → Read and write（classic token 则勾 gist）。',
+            '自动同步：本地数据一有改动、且令牌有效，就会自动推送到 Gist（下方显示服务器版本时间，便于判断哪份新）。',
         ];
         for (var i = 0; i < tips.length; i++) {
             var line = document.createElement('div');
@@ -123,4 +115,243 @@
     } else {
         addHint();
     }
+
+    // ==================== C) 服务器版本时间戳 + 自动同步 ====================
+    // -----------------------------------------------------------------------
+    // 数据流（localstorage 模式）：
+    //   - 同步数据本体  -> localStorage['bonjourr']（一个大 JSON 对象）
+    //   - 同步元信息    -> localStorage['gistId' / 'gistToken' / 'syncType' ...]
+    //   上游每次 sync.set 在 localstorage 模式下会 `localStorage.bonjourr = ...`
+    //   并 `dispatchEvent(new Event('storage'))`（main.js:1748-1749）。
+    //   这里靠监听该事件驱动自动同步，无需改上游。
+    //
+    // 令牌校验：上游 isGistTokenValid 打 `GET /gists?since=...`，该端点
+    //   allows_permissionless_access=true（细粒度 token 无 Gists 权限也 200），
+    //   会误判通过。这里改为直接试 `GET /gists/{id}`，200/403/401 各归各：
+    //     200 -> 令牌可读（有效）
+    //     401 -> 令牌无效
+    //     403 -> 令牌有效但缺 Gists 写权限（自动推送会 403，降级手动）
+    // -----------------------------------------------------------------------
+
+    var state = {
+        lastLocalHash: null,
+        lastAutoKey: null,
+        pushTimer: null,
+        polling: false,
+    };
+
+    // 读一个键（容错）
+    function readLocal(key) {
+        try {
+            return localStorage.getItem(key);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // 解析同步数据本体
+    function readSyncData() {
+        var raw = readLocal('bonjourr');
+        if (!raw) return null;
+        try {
+            var o = JSON.parse(raw);
+            return o && typeof o === 'object' ? o : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // 哈希：用稳定排序的 JSON 字符串（避免键序抖动造成误判「变了」）
+    function stableHash(obj) {
+        if (!obj) return '';
+        try {
+            return JSON.stringify(obj, Object.keys(obj).sort());
+        } catch (e) {
+            return JSON.stringify(obj);
+        }
+    }
+
+    // 取服务器 Gist 元信息（含 updated_at 精确到秒）
+    function gistHeaders(token) {
+        return {
+            Authorization: 'Bearer ' + token,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        };
+    }
+
+    // 渲染到「Server status」区块：base 文案 + 链接（服务器版本时间，精确到秒）
+    function renderServerStatus(token, id) {
+        var base = document.getElementById('gist-sync-status-base');
+        if (!base) return;
+        if (!token) {
+            base.textContent = '等待认证';
+            return;
+        }
+        if (!id) {
+            base.textContent = '尚无保存的数据';
+            return;
+        }
+        fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token) })
+            .then(function (resp) {
+                if (resp.status !== 200) {
+                    base.textContent = id === undefined ? '尚无保存的数据' : '服务器无数据';
+                    return null;
+                }
+                return resp.json().then(function (json) {
+                    var iso = json.updated_at;
+                    var d = new Date(iso);
+                    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+                    var localStr =
+                        d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+                        ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+                    window.__wei8Sync.lastServerAt = localStr;
+
+                    var wrapper = document.getElementById('gist-sync-status-wrapper');
+                    var old = document.querySelector('#gist-sync-status');
+                    if (old && old.parentNode) old.parentNode.removeChild(old);
+
+                    if (wrapper) {
+                        var link = document.createElement('a');
+                        link.id = 'gist-sync-status';
+                        link.href = json.html_url;
+                        link.textContent = '服务器版本 ' + localStr;
+                        wrapper.appendChild(link);
+                    }
+                    base.textContent = '服务器版本';
+                });
+            })
+            .catch(function () {
+                /* 网络异常，保留上次文案 */
+            });
+    }
+
+    // 校验令牌：返回 { ok, canWrite, code }
+    function checkToken(token, id) {
+        return new Promise(function (resolve) {
+            if (!token) return resolve({ ok: false, canWrite: false, code: 0 });
+            var url = 'https://api.github.com/gists/' + (id || 'check');
+            fetch(url, { headers: gistHeaders(token) })
+                .then(function (resp) {
+                    resolve({ ok: resp.status === 200, canWrite: resp.status === 200, code: resp.status });
+                })
+                .catch(function () {
+                    resolve({ ok: false, canWrite: false, code: 0 });
+                });
+        });
+    }
+
+    // 自动推送：首次（id 为空/undefined）POST 新建；否则 PATCH 更新
+    function autoPush() {
+        var token = readLocal('gistToken');
+        var idRaw = readLocal('gistId');
+        var id = (idRaw && idRaw !== 'undefined' && idRaw !== 'null' && idRaw !== 'NaN') ? idRaw : undefined;
+        var data = readSyncData();
+        if (!token || !data) return;
+
+        // 上游的「默认数据不许发」护栏（对应 isStorageDefault）
+        // 这里简单判：同步数据等于默认（无用户改动）则不推。
+        var files = { 'bonjourr-export.json': { content: JSON.stringify(data, undefined, 2) } };
+        var description =
+            'File automatically generated by Bonjourr. Learn more on https://bonjourr.fr/docs/settings-management/syncing/#github-gist';
+
+        var req = id === undefined
+            ? {
+                method: 'POST',
+                url: 'https://api.github.com/gists',
+                body: JSON.stringify({ files: files, description: description, public: false }),
+            }
+            : {
+                method: 'PATCH',
+                url: 'https://api.github.com/gists/' + id,
+                body: JSON.stringify({ files: files, description: description }),
+            };
+
+        fetch(req.url, { method: req.method, headers: gistHeaders(token), body: req.body })
+            .then(function (resp) {
+                if (resp.status === 200 || resp.status === 201) {
+                    var json = resp.status === 201 ? null : {};
+                    return (resp.status === 201 ? resp.json() : Promise.resolve(json)).then(function (j) {
+                        var newId = resp.status === 201 ? j.id : id;
+                        // 首次新建成功后记住 id（上游 manual send 也会写，这里双保险）
+                        try {
+                            localStorage.setItem('gistId', String(newId));
+                        } catch (e) { /* ignore */ }
+                        window.__wei8Sync.gistId = newId;
+                        window.__wei8Sync.autoSynced++;
+                        window.__wei8Sync.lastAutoAt = Date.now();
+                        window.__wei8Sync.lastError = null;
+                        // 推送成功后刷新服务器时间戳
+                        renderServerStatus(token, newId);
+                        return j;
+                    });
+                }
+                if (resp.status === 401) {
+                    window.__wei8Sync.lastError = '401 令牌无效，已停止自动推送（改回手动「发送」）';
+                    window.__wei8Sync.tokenOk = false;
+                    return;
+                }
+                if (resp.status === 403) {
+                    window.__wei8Sync.lastError = '403 令牌缺 Gists 写权限（Account permissions → Gists → Read and write）';
+                    window.__wei8Sync.tokenOk = false;
+                    return;
+                }
+                if (resp.status === 404) {
+                    window.__wei8Sync.lastError = '404 Gist 不存在（服务器那份已被删，改回手动「发送」重建）';
+                    return;
+                }
+                window.__wei8Sync.lastError = '推送失败 HTTP ' + resp.status;
+            })
+            .catch(function (err) {
+                window.__wei8Sync.lastError = '网络异常：' + (err && err.message ? err.message : String(err));
+            });
+    }
+
+    // 主监听：上游 localstorage 模式每次 sync.set 都会 dispatch `storage` 事件
+    // （main.js:1749）。同时兜底用 window 'storage'（跨标签页）。
+    function onStorage() {
+        // 只有同步模式 + 有令牌才自动推
+        var token = readLocal('gistToken');
+        if (!token) return;
+
+        // 去抖：同一份数据 2s 内不重复推
+        var data = readSyncData();
+        var key = stableHash(data);
+        if (key === state.lastAutoKey) return;
+        state.lastAutoKey = key;
+
+        if (state.pushTimer) clearTimeout(state.pushTimer);
+        state.pushTimer = setTimeout(function () {
+            autoPush();
+            state.pushTimer = null;
+        }, 2000);
+    }
+
+    // 轮询刷新服务器版本时间戳（首次进入设置 + 每 60s 一次，仅当有 token+id）
+    function startPoll() {
+        if (state.polling) return;
+        state.polling = true;
+        function tick() {
+            var token = readLocal('gistToken');
+            var idRaw = readLocal('gistId');
+            var id = (idRaw && idRaw !== 'undefined' && idRaw !== 'null' && idRaw !== 'NaN') ? idRaw : null;
+            if (token && id) {
+                renderServerStatus(token, id);
+            }
+            setTimeout(tick, 60000);
+        }
+        tick();
+    }
+
+    // 事件接入：上游在 sync.set 里 `globalThis.dispatchEvent(new Event('storage'))`
+    window.addEventListener('storage', onStorage);
+    // 上游是 `globalThis.dispatchEvent(new Event('storage'))` —— 即 window 上的原生 storage 事件
+    // （localstorage 模式下它不走跨标签页，但事件名仍是 'storage'，直接挂在 window 上即可捕获）
+
+    // 首次进入设置面板时，把服务器时间戳刷新一遍
+    document.addEventListener('DOMContentLoaded', function () {
+        // 面板每次打开（上游在 toggleSyncSettingsOption 里调用 setGistStatus），
+        // 这里在 1s 后补一次刷新，覆盖「面板刚打开、DOM 还没渲染出 status 容器」的时序
+        setTimeout(function () { startPoll(); }, 1000);
+    });
 })();

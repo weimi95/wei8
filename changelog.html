@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.5</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.6</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,23 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.6</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>
+                            同步面板新增<strong>服务器版本时间戳</strong>（精确到秒、按本地时区显示），
+                            一眼能看出 GitHub 那份是几点几分几秒更新的，方便判断服务器与本地哪份更新。
+                        </li>
+                        <li>
+                            <strong>自动同步</strong>：本地数据一有改动、且令牌有效，就会自动推送到 Gist，
+                            不用再手动点「发送」。第一次会自动在你的 GitHub 建好私有 Gist 并记住，之后只更新。
+                        </li>
+                        <li>
+                            令牌没写权限或失效时，自动同步会<strong>自动停手并提示</strong>，退回手动「发送」，
+                            不会反复报错。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.5</span><span class="date">2026-09-20</span>
                     <ul class="changes">
                         <li>

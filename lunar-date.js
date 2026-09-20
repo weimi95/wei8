@@ -172,7 +172,9 @@
 
             if (!txt) {
                 // 浏览器不支持农历 → 撤掉已有节点，页面回到原样
-                if (span) span.parentNode.removeChild(span);
+                // 用 p.removeChild 而不是 span.parentNode.removeChild：节点一定是我们插在这格里的，
+                // 直接按父节点摘更直接，也少依赖一个真实 DOM 才有的属性。
+                if (span) p.removeChild(span);
                 state.unsupported = true;
                 continue;
             }
