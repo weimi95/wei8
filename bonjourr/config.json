@@ -50,13 +50,14 @@
     }
   },
   "weather": {
+    "city": "泉州",
     "unit": "metric",
     "show_unit": true,
-    "geolocation": "approximate",
+    "geolocation": "off",
     "forecast": "auto",
     "temperature": "actual",
-    "moreinfo": "none",
-    "provider": ""
+    "moreinfo": "custom",
+    "provider": "https://www.weather.com.cn/"
   },
   "move": {
     "selection": "single",

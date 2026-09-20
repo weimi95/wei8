@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wei8 天气源设置</title>
+<style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0; padding: 32px 16px 64px;
+        font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        background: #1B2A33; color: #e8eef2; line-height: 1.65;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; }
+    .sub { color: #8ba3b0; font-size: 13px; margin: 0 0 24px; }
+    .card {
+        background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1);
+        border-radius: 10px; padding: 18px 20px; margin-bottom: 16px;
+    }
+    .card h2 { font-size: 14px; margin: 0 0 14px; font-weight: 600; color: #b9cdd8; }
+    label { display: block; font-size: 13px; color: #9fb6c2; margin: 12px 0 6px; }
+    input[type=text], select {
+        width: 100%; padding: 9px 11px; font-size: 14px; font-family: inherit;
+        background: rgba(0,0,0,.25); color: #e8eef2;
+        border: 1px solid rgba(255,255,255,.16); border-radius: 7px;
+    }
+    input[type=text]:focus, select:focus { outline: 2px solid #4a9fd8; outline-offset: -1px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+    button {
+        padding: 9px 18px; font-size: 14px; font-family: inherit; cursor: pointer;
+        border-radius: 7px; border: 1px solid rgba(255,255,255,.18);
+        background: rgba(255,255,255,.08); color: #e8eef2;
+    }
+    button:hover { background: rgba(255,255,255,.15); }
+    button.primary { background: #2f7fb8; border-color: #2f7fb8; }
+    button.primary:hover { background: #3a92d0; }
+    .radio-row { display: flex; gap: 20px; flex-wrap: wrap; }
+    .radio-row label { display: flex; align-items: center; gap: 7px; margin: 0; color: #e8eef2; font-size: 14px; cursor: pointer; }
+    #qw-fields { margin-top: 4px; }
+    .hidden { display: none !important; }
+    .test {
+        margin-top: 10px; padding: 11px 13px; border-radius: 7px; font-size: 13px;
+        font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
+        background: rgba(0,0,0,.3); border-left: 3px solid #556;
+    }
+    .test.ok   { border-left-color: #35b37e; }
+    .test.bad  { border-left-color: #d9534f; }
+    .test.wait { border-left-color: #cc9a2e; color: #cbb478; }
+    .note { font-size: 12.5px; color: #8ba3b0; margin-top: 10px; }
+    .note b { color: #b9cdd8; }
+    code { background: rgba(0,0,0,.3); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+    .status { font-size: 13px; margin-left: auto; align-self: center; color: #6fbf9a; }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <h1>Wei8 天气源设置</h1>
+    <p class="sub">
+        Bonjourr 自带的天气服务端已失效（实测三个 provider 全部 503 / 返回空 body），
+        本设置用于把天气请求改接到可直连的数据源。
+    </p>
+
+    <div class="card">
+        <h2>1. 选择数据源</h2>
+        <div class="radio-row">
+            <label><input type="radio" name="p" value="openmeteo" /> open-meteo（免费、无需 Key）</label>
+            <label><input type="radio" name="p" value="qweather" /> 和风天气（需自备 Key）</label>
+        </div>
+
+        <div id="qw-fields" class="hidden">
+            <label for="key">和风天气 API Key</label>
+            <input id="key" type="text" placeholder="控制台 → 项目管理 → 凭据" autocomplete="off" spellcheck="false" />
+            <label for="host">专属 API Host</label>
+            <input id="host" type="text" placeholder="例如 abcxyz.qweatherapi.com（控制台 → 设置里查看）" autocomplete="off" spellcheck="false" />
+            <p class="note">
+                <b>两点提醒：</b>① 页面是公开的，Key 存在浏览器本地 localStorage 里，任何人都能在 F12 里看到，
+                请务必在控制台给凭据配置<b>「应用限制」域名白名单</b>，把可用域名限定为本站。
+                ② 和风从 2027-02-01 起会限制 API Key 的每日请求数，个人用量够用。
+            </p>
+        </div>
+
+        <div class="row">
+            <button class="primary" id="save">保存</button>
+            <button id="reset">恢复默认</button>
+            <span class="status" id="status"></span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>2. 连通性自测（在你当前网络下实测）</h2>
+        <p class="note" style="margin-top:0">
+            自测直接用浏览器发请求，走的就是你平时的网络线路 —— 哪个通就用哪个。
+        </p>
+        <div class="row" style="margin-top:14px">
+            <button id="t-openmeteo">测试 open-meteo</button>
+            <button id="t-qweather">测试和风天气</button>
+        </div>
+        <div id="out"></div>
+        <p class="note">测试坐标固定为泉州（24.874, 118.576）。</p>
+    </div>
+
+    <div class="card">
+        <h2>3. 下一步</h2>
+        <p class="note" style="margin-top:0">
+            保存后回到 <a href="./" style="color:#6cb6e8">导航页</a>，按 <code>Ctrl + F5</code> 强制刷新即可生效。
+            想排查问题可在控制台执行 <code>localStorage.setItem('wei8-weather-debug','1')</code> 打开日志，
+            天气请求的接管过程会打印在 Console 里。
+        </p>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+    var CFG_KEY = 'wei8-weather';
+
+    var $ = function (id) { return document.getElementById(id); };
+    var LAT = 24.874, LON = 118.576;
+
+    function readCfg() {
+        var d = { p: 'openmeteo', key: '', host: '' };
+        try {
+            var o = JSON.parse(localStorage.getItem(CFG_KEY) || '{}');
+            if (o && typeof o === 'object') {
+                if (o.p) d.p = o.p;
+                if (o.key) d.key = o.key;
+                if (o.host) d.host = o.host;
+            }
+        } catch (e) { /* ignore */ }
+        return d;
+    }
+
+    function fill() {
+        var c = readCfg();
+        var radios = document.getElementsByName('p');
+        for (var i = 0; i < radios.length; i++) radios[i].checked = (radios[i].value === c.p);
+        $('key').value = c.key || '';
+        $('host').value = c.host || '';
+        toggleQw();
+    }
+
+    function toggleQw() {
+        var radios = document.getElementsByName('p');
+        var sel = 'openmeteo';
+        for (var i = 0; i < radios.length; i++) if (radios[i].checked) sel = radios[i].value;
+        $('qw-fields').classList.toggle('hidden', sel !== 'qweather');
+    }
+
+    function say(msg) {
+        $('status').textContent = msg;
+        if (msg) setTimeout(function () { if ($('status').textContent === msg) $('status').textContent = ''; }, 2500);
+    }
+
+    function box(title, cls) {
+        var d = document.createElement('div');
+        d.className = 'test ' + cls;
+        d.textContent = title;
+        $('out').appendChild(d);
+        return d;
+    }
+
+    function fmt(ms) { return ms + ' ms'; }
+
+    function timed(url, opts) {
+        var t0 = performance.now();
+        return fetch(url, opts || {}).then(function (r) {
+            return r.text().then(function (t) {
+                return { status: r.status, ms: Math.round(performance.now() - t0), text: t, headers: r.headers };
+            });
+        });
+    }
+
+    $('save').onclick = function () {
+        var radios = document.getElementsByName('p');
+        var sel = 'openmeteo';
+        for (var i = 0; i < radios.length; i++) if (radios[i].checked) sel = radios[i].value;
+        var cfg = { p: sel, key: $('key').value.trim(), host: $('host').value.trim() };
+        localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+        say('已保存：' + (sel === 'qweather' ? '和风天气' : 'open-meteo'));
+    };
+
+    $('reset').onclick = function () {
+        localStorage.removeItem(CFG_KEY);
+        fill();
+        say('已恢复默认（open-meteo）');
+    };
+
+    var radios = document.getElementsByName('p');
+    for (var i = 0; i < radios.length; i++) radios[i].onchange = toggleQw;
+
+    $('t-openmeteo').onclick = function () {
+        var el = box('open-meteo 测试中…', 'wait');
+        timed('https://api.open-meteo.com/v1/forecast?latitude=' + LAT + '&longitude=' + LON +
+              '&current=temperature_2m,weather_code,apparent_temperature&timezone=auto')
+            .then(function (r) {
+                if (r.status !== 200) throw new Error('HTTP ' + r.status);
+                var d = JSON.parse(r.text);
+                el.className = 'test ok';
+                el.textContent = '✅ open-meteo 通\nHTTP 200 · ' + fmt(r.ms) +
+                    '\n当前温度 ' + d.current.temperature_2m + '°C / 体感 ' + d.current.apparent_temperature +
+                    '°C · weather_code=' + d.current.weather_code +
+                    '\nCORS: ' + (r.headers.get('access-control-allow-origin') || '(响应头不可见，但请求成功即说明已放行)');
+            })
+            .catch(function (e) {
+                el.className = 'test bad';
+                el.textContent = '❌ open-meteo 不通\n' + (e && e.message) +
+                    '\n说明你的网络到 api.open-meteo.com 不可用，请改用和风天气。';
+            });
+    };
+
+    $('t-qweather').onclick = function () {
+        var key = $('key').value.trim();
+        var host = $('host').value.trim() || 'devapi.qweather.com';
+        if (!key) {
+            var el0 = box('请先填写 API Key', 'bad');
+            return;
+        }
+        var el = box('和风天气测试中…', 'wait');
+        timed('https://' + host + '/weather/v1/current/' + LAT + '/' + LON + '?lang=zh',
+              { headers: { 'X-QW-Api-Key': key } })
+            .then(function (r) {
+                if (r.status !== 200) throw new Error('HTTP ' + r.status + ' · ' + r.text.slice(0, 200));
+                el.className = 'test ok';
+                el.textContent = '✅ 和风天气通\nHTTP 200 · ' + fmt(r.ms) + '\n' + r.text.slice(0, 400);
+            })
+            .catch(function (e) {
+                // 新版路径失败时提示可回退的旧版路径
+                var el2 = box('新版路径失败，尝试旧版 /v7/weather/now…', 'wait');
+                timed('https://' + host + '/v7/weather/now?location=' + LON + ',' + LAT + '&lang=zh',
+                      { headers: { 'X-QW-Api-Key': key } })
+                    .then(function (r) {
+                        if (r.status !== 200) throw new Error('HTTP ' + r.status + ' · ' + r.text.slice(0, 200));
+                        el2.className = 'test ok';
+                        el2.textContent = '✅ 和风天气通（旧版路径 /v7/weather/now）\nHTTP 200 · ' + fmt(r.ms) +
+                            '\n' + r.text.slice(0, 400);
+                    })
+                    .catch(function (e2) {
+                        el.className = 'test bad';
+                        el.textContent = '❌ 和风天气不通\n新版路径: ' + (e && e.message) +
+                            '\n旧版路径: ' + (e2 && e2.message) +
+                            '\n请检查 Key 是否有效、API Host 是否填对（控制台 → 设置）。';
+                    });
+            });
+    };
+
+    fill();
+})();
+</script>
+</body>
+</html>
