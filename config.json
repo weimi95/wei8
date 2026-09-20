@@ -64,7 +64,7 @@
     "forecast": "auto",
     "temperature": "actual",
     "moreinfo": "custom",
-    "provider": "https://www.weather.com.cn/"
+    "provider": "https://www.qweather.com/"
   },
   "move": {
     "selection": "single",

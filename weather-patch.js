@@ -47,26 +47,40 @@
  *     递增 PRESET_VER 会把老板在设置里调好的东西（关掉的问候语、背景、书签顺序）全冲掉。
  *     故做定点迁移：只在"还完全没被用户动过"时改这一个字段，独立标记保证只跑一次。
  *
- * 【v3.1 2026-09-20】定位做成「双源链」，因为 ipwho.is 会限流
- *   实测（真实浏览器 + 本机 IP）：ipwho.is 稳定返回
- *     {"success":false,"message":"Rate limit exceeded"}（HTTP 429），
- *   等待 90 秒后依旧 429 —— 说明窗口是分钟级以上，不是瞬时抖动。
- *   而它是唯一「一次往返同时给出中文名 + 坐标」的免费接口，能力仍然最合适，
- *   所以不废弃，只是把它降级为**快路径**，另立一条不依赖它的降级链：
- *     A 快路径 ipwho.is            -> {中文名, 坐标}（一次请求）
- *     B 降级链 ip.zxinc.org        -> 中文名（实测准确：中国\t福建省\t\t泉州市，CORS 回显 Origin）
- *               └ 本地 CITIES 表    -> 坐标（命中即零请求，且坐标是我们信得过的）
- *               └ open-meteo geocoding -> 表外城市的坐标
- *   两条链**各自独立退避**，A 挂了不会阻断 B —— 否则"限流"会直接退化成"没有定位"。
+ * 【v3.2 2026-09-20】两处修正，都是被"线上真实浏览器"抓出来的
  *
- *   为什么坐标不能只靠 geocoding（实测命中率极不稳定，逐条记录）：
- *     泉州    -> 命中 0       泉州市 -> 命中 1（福建省）✓
- *     厦门    -> 命中 0       厦门市 -> 命中 1（福建省）✓
- *     北京    -> 命中 3 ✓     北京市 -> 命中 0
- *     上海市  -> 命中「上海市/伊利诺伊州」@41.05,-90.50  ✗ 命中美国同名的坑！
- *     台北/建始/建始县 -> 命中 0
- *   结论：中文城市名走本地表最稳；geocoding 只作表外兜底，且**必须校验 country_code**，
- *   否则会把上海用户定位到美国。ACAO 已确认是 `*`，可跨域直接调用。
+ * 一、定位：**必须强制走 IPv4**，否则 IP 库会把用户定位到别的城市
+ *   实测（同一台机器、同一个宽带出口）：
+ *     IPv4 120.37.56.172 -> ipwho.is 给「泉州市/福建省」+ 邮编 362000      ✓
+ *                            该 IPv4 的 rDNS 是 ...broad.qz.fj...（泉州福建）✓
+ *     IPv6 240e:378:...   -> ipwho.is 给「北京市」                         ✗
+ *                            ipinfo.io 给「Shanghai」                       ✗
+ *                            ip.zxinc.org 给「泉州市」                      ✓
+ *   IPv4 与 IPv6 是**同一个宽带出口**，城市必然相同 -> 泉州是对的，
+ *   两个国际库对这条 IPv6 的判断都错（IPv6 的地理库质量普遍差）。
+ *   而浏览器默认按 AAAA 优先 -> **用户实际拿到的是错的那个**（实测线上缓存里就是"北京"）。
+ *
+ *   修法：先问一个**只有 A 记录**的域名拿到自己的 IPv4，再用这个 IPv4 查定位。
+ *     https://ipv4.icanhazip.com/  只解析 A、CORS 为 *、实测返回 120.37.56.172
+ *   「只有 A 记录」正是这条链的关键 —— 浏览器访问它就必然走 IPv4。
+ *
+ *   注意：**拿不到 IPv4 时绝不能退回「直接问 ipwho.is」** —— 那一条走的正是会出错的 IPv6 路径，
+ *   会给出"看起来正常但是错的"城市名。宁可跳到源 B。
+ *
+ * 二、点击天气的跳转目标改成**和风天气的城市页**
+ *   https://www.qweather.com/weather/<编码>.html
+ *   比原来的中国天气网城市页好在两点，且**零额外成本**：
+ *     - 是 https（原来是 http）
+ *     - **用的是同一套编码**（101230501 = 泉州，两家同源），现成的 city-codes.js 直接复用
+ *   实测 8/8 有效（泉州/建始/恩施/石狮/晋江/厦门/乌鲁木齐/拉萨，title 均正确回显城市名），
+ *   编造编码返回「404 ｜ 和风天气」-> 说明它真按编码校验，不是 SPA 兜底。
+ *   表外城市回落 https://www.qweather.com/ —— 该站会按访问者 IP 自动定位，比百度搜索更直达。
+ *
+ *   【为什么删掉 open-meteo geocoding 补坐标】实测中文命中率太差，且有"命中错城市"的失败模式：
+ *     建始/建始县/建始+湖北省 -> 0 命中 ｜ 晋江 -> 0 ｜ 仙游县/阳新县/利川市 -> 0
+ *     宁德 -> 命中**西藏那曲市的「宁德」**  ✗
+ *     上海市 -> 命中**美国伊利诺伊州**的「上海市」@41.05,-90.50  ✗
+ *   即"过滤了也不是总能对，不过滤一定可能错"。故整条链删掉，不留会静默给出错误答案的分支。
  * ---------------------------------------------------------------------------
  */
 (function () {
@@ -79,42 +93,23 @@
     var DBG_KEY = 'wei8-weather-debug';
 
     // ---------------------------------------------------------------------
-    // 定位源 A（快路径）：ipwho.is
-    // 实测**唯一**能一次往返同时给出「中文名 + 坐标」的免费接口，所以「显示的地名」和
-    // 「取数的位置」天然同源、不会各说各话。缺点是会按 IP 限流（见 v3.1 注释）。
-    //
-    // 其它候选的实测结论（2026-09-20，本机直连 + 带 Origin 头）：
-    //   ipapi.co                 -> 403，Cloudflare 盾
-    //   ip-api.com               -> 403 "SSL unavailable"，免费版只给 http，https 页面用不了
-    //   ipwhois.app              -> 403 {"success":false}
-    //   ipinfo.io（免 token）     -> 200 + CORS *，但 city 是**英文且错**（本机被归到 Fuzhou，
-    //                               而 rDNS 明写 ...qz.fj... = 泉州）
-    //   api.ip.sb/geoip          -> 200 + CORS *，同样英文且更偏（Shishicun）
-    //   freeipapi.com            -> 307 跳转
-    //   BigDataCloud 逆地理       -> ECONNRESET
-    //   nominatim.openstreetmap  -> 超时
-    //   国内其它（pconline / 美团 / 百度 qifu / 淘宝 / vore.top / useragentinfo）
-    //                            -> 403 / 404 / 无 CORS / DNS 不存在 / Redis 故障
-    //
-    // 注意 lang 必须写 **zh-CN**：lang=zh 返回英文（city=Quanzhou / region=Fujian Sheng）。
-    var GEO_API = 'https://ipwho.is/?lang=zh-CN';
+    // 定位源 A：**先拿 IPv4，再按 IPv4 查**（两步；原因见文件头 v3.2 第一段）
+    //   step 1  ipv4.icanhazip.com  只有 A 记录 -> 浏览器被迫走 IPv4，返回本机 IPv4
+    //   step 2  ipwho.is/<IPv4>     拿中文地名 + 坐标（IPv4 库是准的，实测泉州 + 邮编 362000）
+    // 两步都成功才算 A 成功。**若 step 1 失败，绝不跳过 step 2 直接问 ipwho.is** ——
+    // 那会走 IPv6 路径拿到错误城市（实测线上就是"北京"）。
+    var GEO_IPV4_API = 'https://ipv4.icanhazip.com/';
+    var GEO_API = 'https://ipwho.is/';
     var GEO_FAIL_KEY = 'wei8-geo-fail';
 
     // ---------------------------------------------------------------------
-    // 定位源 B（降级链）：ip.zxinc.org 出中文名 + 本地表/geocoding 出坐标
-    // 实测 200 且 ACAO 回显调用方 Origin（`Origin: https://weimi95.github.io`
-    // -> `Access-Control-Allow-Origin: https://weimi95.github.io`），跨域可用；
-    // 地名准确（本机 IP -> {"country":"中国\t福建省\t\t泉州市"}）。
-    // 它的代价是**不给坐标**，所以必须再补一步；补坐标优先用本地 CITIES 表
-    // （零请求、且坐标是我们信得过的），表外才问 geocoding。
+    // 定位源 B（降级链）：ip.zxinc.org 出中文名 -> 本地 CITIES 表出坐标
+    // 它是国内库，实测对 IPv4/IPv6 都给准确三级地名（"中国\t福建省\t\t泉州市"），
+    // 且 CORS 回显调用方 Origin。代价是不给坐标，所以只能覆盖本地表内的城市；
+    // 表外城市判失败（宁可不定位，也不要"名字对、坐标错"的错配）。
     // ---------------------------------------------------------------------
     var GEO2_API = 'https://ip.zxinc.org/api.php?type=json';
     var GEO2_FAIL_KEY = 'wei8-geo2-fail';
-    // geocoding 只作表外兜底。中文命中率极不稳定（泉州/厦门/北京市/台北 全为 0 命中），
-    // 且「上海市」会命中美国伊利诺伊州的同名地，故**必须**校验 country_code。
-    var GEOCODE_API = 'https://geocoding-api.open-meteo.com/v1/search';
-    // 允许的国家/地区代码：把中国港澳台一并放行（同属中国），同时挡掉美国同名城市。
-    var GEOCODE_CC = { CN: 1, HK: 1, MO: 1, TW: 1 };
 
     // 天气每小时刷一次，定位没必要跟着每小时问一遍；6 小时足够跟上出差/回家
     var GEO_TTL = 6 * 3600 * 1000;
@@ -153,6 +148,36 @@
             }
             localStorage.setItem(MARK, '1');
         } catch (e) { /* localStorage 不可用时静默跳过，Bonjourr 会回落到内置默认值 */ }
+    })();
+
+    // ---------------------------------------------------------------------
+    // 一次性迁移 2：把静态跳转地址从「中国天气网门户首页」换成「和风首页」
+    //
+    // 为什么需要：display.ts:128 在 moreinfo='custom' 时用的是 **data.provider** 这个静态字段，
+    // 而它天生带不了运行时城市。真实跳转地址由 weather-loc.js 在渲染后用 meta.url 覆写，
+    // 但那只在脚本正常执行时有效 —— 万一 weather-loc.js 没生效，用户点到的就是 provider。
+    // 原来填的是 https://www.weather.com.cn/ （门户首页），正是老板反馈「跑主页有啥用」的那个地址。
+    // 换成和风首页后，即使退到这一层也是「会按访问者 IP 自动定位」的可用结果。
+    //
+    // 同样不改 preset（会把老板调好的设置整份冲掉），只做定点迁移；条件刻意写窄。
+    // ---------------------------------------------------------------------
+    (function migrateProvider() {
+        var MARK = 'wei8-provider-migrated';
+        var OLD = 'https://www.weather.com.cn/';
+        try {
+            if (localStorage.getItem(MARK) === '1') return;
+            var raw = localStorage.getItem('bonjourr');
+            if (raw) {
+                var d = JSON.parse(raw);
+                var w = d && d.weather;
+                if (w && w.moreinfo === 'custom' && w.provider === OLD) {
+                    w.provider = 'https://www.qweather.com/';
+                    localStorage.setItem('bonjourr', JSON.stringify(d));
+                    log('迁移：静态跳转 provider 中国天气网首页 -> 和风首页');
+                }
+            }
+            localStorage.setItem(MARK, '1');
+        } catch (e) { /* localStorage 不可用时静默跳过 */ }
     })();
 
     // ---------------------------------------------------------------------
@@ -431,9 +456,31 @@
         });
     }
 
-    // --------------------------- 源 A：ipwho.is ---------------------------
-    function fetchIpGeoOnce() {
-        return origFetch(GEO_API, { cache: 'no-store' })
+    // ------------- 源 A：先拿 IPv4，再按 IPv4 查（两步） -------------
+    function isIpv4(s) {
+        return /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(String(s).trim());
+    }
+
+    // step 1：这个域名**只解析 A 记录**，所以浏览器必然走 IPv4，拿到的是真实的 IPv4 出口地址。
+    // 这一步是整条链的支点：不是"顺手拿个 IP"，而是**强制把出网协议族从 IPv6 掰到 IPv4**。
+    function fetchIpv4() {
+        return origFetch(GEO_IPV4_API, { cache: 'no-store' })
+            .then(function (r) {
+                if (r.status !== 200) throw new Error('icanhazip HTTP ' + r.status);
+                return r.text();
+            })
+            .then(function (t) {
+                var ip = String(t || '').trim();
+                if (!isIpv4(ip)) throw new Error('icanhazip 未返回合法 IPv4：' + ip.slice(0, 40));
+                return ip;
+            });
+    }
+
+    // step 2：按指定 IPv4 查 ipwho.is —— 一次往返同时给出**中文地名 + 坐标**，两者同源。
+    // 注意：查询必须是 /<ip> 这种形式。直接问 https://ipwho.is/ 走的是调用方协议族，
+    // 浏览器会给 IPv6，于是拿到错城市（实测"北京"）。
+    function ipwhoLookup(ip) {
+        return origFetch(GEO_API + encodeURIComponent(ip) + '?lang=zh-CN', { cache: 'no-store' })
             .then(function (r) {
                 if (r.status !== 200) throw new Error('ipwho.is HTTP ' + r.status);
                 return r.json();
@@ -450,64 +497,50 @@
                 }
                 return saveGeo({
                     city: city, region: normCity(j.region),
-                    lat: lat, lon: lon, src: 'ipwho', ts: Date.now(),
+                    lat: lat, lon: lon, src: 'ipwho4', ts: Date.now(),
                 });
             });
     }
 
+    // 重试只包 step 2（限流发生在它身上）。step 1 失败就整条 A 作废、直接跳源 B ——
+    // **绝不能跳过 step 1 去裸问 ipwho.is**，那正是会拿到错误 IPv6 城市的那条路。
     function fetchIpGeo() {
-        return withRetryOnce(fetchIpGeoOnce, 'IP 定位(ipwho.is)');
+        return fetchIpv4().then(function (ip) {
+            return withRetryOnce(function () { return ipwhoLookup(ip); }, 'IP 定位(ipwho.is)');
+        });
     }
 
-    // ------------------- 源 B：ip.zxinc.org + 坐标补全 -------------------
-    // 解析 zxinc 的 country 字段。真实形态是制表符分隔的层级：
-    //   "中国\t福建省\t\t泉州市"      -> 取最后一段「泉州市」
-    //   "中国\t福建省"               -> 只有省级，**判失败**：
-    //      显示省名却拿省会坐标，会造成"地名与数据不一致"，比没有名字更误导。
-    //   为什么用 data.country 而不是 data.location：后者尾部挂着运营商
-    //   （"泉州市 中国电信\t公众宽带"），取最后一段会变成「公众宽带」。
+    // ------------------- 源 B：ip.zxinc.org 提供地名 -------------------
+    // 解析 zxinc 的 country 字段。
+    // ★ 这个接口**有两种响应形态**（同一台机器、同一天都抓到过），分隔符和「市」后缀都不同：
+    //     形态 1  "中国\t福建省\t\t泉州市"   -> 制表符分隔，带「市」后缀
+    //     形态 2  "中国–福建–泉州"          -> **en dash(U+2013)** 分隔，不带「市」后缀
+    //   所以绝不能只按 \t 切分 —— 只认形态 1 的话形态 2 会切不出段，
+    //   然后被当成「只有省级」而静默判失败（实测就是这么挂的，报"未给出市级地名"）。
+    //   这里按「制表符 / 破折号类 / 常见连接符 / 空白」统一切分。
+    //
+    // 又为什么用 data.country 而不是 data.location：后者尾部挂着运营商
+    //   （"中国–福建–泉州 电信"），取末段会得到「泉州 电信」这种脏值。
     function parseZxincGeo(j) {
         var d = j && j.data;
         if (!d) return '';
         var raw = d.country || d.location || '';
         if (!raw) return '';
-        var parts = String(raw).split(/\t+/).map(function (s) { return s.trim(); });
-        parts = parts.filter(function (p) { return p && !/^(中国|China)$/i.test(p); });
+        var parts = String(raw)
+            .split(/[\t\r\n\u2013\u2014\u00b7\u30fb>|｜\/,、]+|\s{2,}/)
+            .map(function (s) { return s.trim(); })
+            .filter(Boolean);
+        parts = parts.filter(function (p) { return !/^(中国|China)$/i.test(p); });
         if (!parts.length) return '';
         var last = parts[parts.length - 1];
+        // 省级名（…省/自治区/特别行政区）不能当地名：
+        // 显示省名却拿省会坐标，会造成"地名与数据不一致"，比没有名字更误导。
+        if (/(省|自治区|特别行政区)$/.test(last)) return '';
         var name = normCity(last);
         if (!name) return '';
-        // 只有省级一段时，除非该名字正好在内置表里（如「北京」），否则判失败
+        // 只有一段时，除非该名字正好在内置表里（如「北京」），否则判失败
         if (parts.length === 1 && !CITIES[name]) return '';
         return name;
-    }
-
-    // 表外城市的坐标：open-meteo geocoding。
-    // 两个候选**并行**问（"原名" 与 "原名+市"），因为实测命中规律不一致：
-    //   泉州 -> 空，泉州市 -> 命中 ／ 厦门 -> 空，厦门市 -> 命中 ／ 北京 -> 命中，北京市 -> 空
-    // 并且**必须**用 country_code 过滤：实测「上海市」首条命中的是
-    // 美国伊利诺伊州的 Shanghai @41.05,-90.50，不过滤就会把上海用户定位到美国。
-    function geocodeName(name) {
-        var cands = [name, name + '市'];
-        var reqs = cands.map(function (c) {
-            var u = GEOCODE_API + '?name=' + encodeURIComponent(c) + '&count=5&language=zh&format=json';
-            return origFetch(u, { cache: 'no-store' })
-                .then(function (r) { return r.status === 200 ? r.json() : null; })
-                .catch(function () { return null; });
-        });
-        return Promise.all(reqs).then(function (list) {
-            for (var i = 0; i < list.length; i++) {
-                var res = (list[i] && list[i].results) || [];
-                for (var k = 0; k < res.length; k++) {
-                    var it = res[k];
-                    if (!it || !GEOCODE_CC[it.country_code]) continue;
-                    var lat = num(it.latitude), lon = num(it.longitude);
-                    if (lat === undefined || lon === undefined) continue;
-                    return { name: normCity(it.name), lat: lat, lon: lon };
-                }
-            }
-            return null;
-        });
     }
 
     function fetchZxincGeoOnce() {
@@ -520,19 +553,14 @@
                 if (!j || j.code !== 0) throw new Error('zxinc code=' + (j && j.code));
                 var city = parseZxincGeo(j);
                 if (!city) throw new Error('zxinc 未给出市级地名');
-                // 先查本地表：零额外请求，且坐标是我们信得过的
+                // 坐标**只能**来自本地表。表外城市一律判失败：
+                // 源 B 本身不给坐标，而唯一能补坐标的 geocoding 既命中率低（建始/晋江/仙游县全 0）
+                // 又会命中错误同名地（宁德 -> 西藏那曲、上海市 -> 美国伊利诺伊州）。
+                // 用它换来的"有坐标"会把用户定位到别的城市 —— 比"没有定位"更糟，所以不要。
                 var hit = lookupCity(city);
-                if (hit) {
-                    return saveGeo({
-                        city: city, lat: hit[0], lon: hit[1], src: 'zxinc+table', ts: Date.now(),
-                    });
-                }
-                return geocodeName(city).then(function (g) {
-                    if (!g) throw new Error('城市「' + city + '」在本地表与 geocoding 均无坐标');
-                    return saveGeo({
-                        city: g.name || city, lat: g.lat, lon: g.lon,
-                        src: 'zxinc+geocode', ts: Date.now(),
-                    });
+                if (!hit) throw new Error('城市「' + city + '」不在本地坐标表内（源 B 无坐标能力）');
+                return saveGeo({
+                    city: city, lat: hit[0], lon: hit[1], src: 'zxinc+table', ts: Date.now(),
                 });
             });
     }
@@ -545,7 +573,7 @@
     function getGeo() {
         var cached = readGeoCache();
         if (cached) {
-            log('IP 定位走缓存：' + cached.city + '（来源 ' + (cached.src || 'ipwho') + '）');
+            log('IP 定位走缓存：' + cached.city + '（来源 ' + (cached.src || 'ipwho4') + '）');
             return Promise.resolve(cached);
         }
 
@@ -554,7 +582,7 @@
             : fetchIpGeo()
                 .then(function (g) { clearFailure(GEO_FAIL_KEY); return g; })
                 .catch(function (e) {
-                    log('定位源 A(ipwho.is) 失败：' + (e && e.message));
+                    log('定位源 A(ipv4+ipwho.is) 失败：' + (e && e.message));
                     stats.lastError = 'geoA: ' + ((e && e.message) || e);
                     markFailure(GEO_FAIL_KEY);
                     return null;
@@ -584,6 +612,21 @@
     // 表里没有的一律回落百度搜索：宁可能用（结果页首屏就是天气卡片），
     // 也好过猜一个编码跳到**别的城市**的页面 —— 那是更糟的错误。
     // ---------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // 城市名 -> 天气页地址（点击天气的跳转目标）
+    //
+    // 目标站从「中国天气网」换成「和风天气」，理由（2026-09-20 实测）：
+    //   - 和风是 https（中国天气网是 http）；页面干净，还带空气质量/预警
+    //   - **两家用同一套城市编码**（101230501 = 泉州），现成的 city-codes.js 直接复用
+    //   - 地址形如 https://www.qweather.com/weather/<编码>.html，**不需要拼音**
+    //   实测 8/8 有效：泉州/建始/恩施/石狮/晋江/厦门/乌鲁木齐/拉萨，
+    //   页面 <title> 均正确回显城市名（如「建始县天气 …」）；
+    //   编造编码返回「404 ｜ 和风天气」-> 它真按编码校验，不是 SPA 一概 200。
+    //
+    // 编码表 city-codes.js 由 gen_city_codes.js 离线生成，**每条都用城市页 <title> 复验过**。
+    // 表里没有的城市回落和风首页 —— 它会按访问者 IP 自动定位，
+    // 比百度搜索更直达，也比"猜一个编码跳到别的城市"安全得多。
+    // ---------------------------------------------------------------------
     function findCityCode(city) {
         var codes = (typeof window !== 'undefined' && window.WEI8_CITY_CODES) || {};
         if (!city) return '';
@@ -606,9 +649,9 @@
 
     function weatherPageUrl(city) {
         var code = findCityCode(city);
-        if (code) return 'http://www.weather.com.cn/weather/' + code + '.shtml';
-        log('城市「' + city + '」不在编码表内，跳转回落百度搜索');
-        return 'https://www.baidu.com/s?wd=' + encodeURIComponent(city + '天气');
+        if (code) return 'https://www.qweather.com/weather/' + code + '.html';
+        log('城市「' + city + '」不在编码表内，跳转回落和风首页（按其 IP 自动定位）');
+        return 'https://www.qweather.com/';
     }
 
     // ---------------------------------------------------------------------
@@ -879,7 +922,7 @@
         lastUrl: '',        // 最后一条被接管的上游请求 URL
         lastError: '',
         geoMode: '',        // 'ip' | 'gps' | 'manual'
-        geoSource: '',      // 定位来源：ipwho / zxinc+table / zxinc+geocode / ''（兜底城市）
+        geoSource: '',      // 定位来源：ipwho4 / zxinc+table / ''（兜底城市）
         geoBackoff: false,  // 处于定位失败退避窗口内（本次跳过请求）
         lastCity: '',       // 解析出的中文地名
         lastWeatherUrl: '', // 该地名的天气页地址（点击跳转目标）
