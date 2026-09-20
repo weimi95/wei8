@@ -1,0 +1,137 @@
+/* ============================================================
+   Wei8 搜索增强层样式（玻璃拟态，贴合 Bonjourr 现有风格）
+   不改上游源码：仅对新增节点与少量容器视觉做调整，无 !important（除非必要会注释）。
+   ============================================================ */
+
+/* 让 tabs 在卡片上方参与正常文档流；把"卡片"的视觉（背景/边框/圆角/阴影）
+   从 #sb_container 交给 #searchbar-wrapper —— 否则加上 tabs 后阴影会框住 tabs。
+   （依据：上游 #sb_container 自带 box-shadow，现容器变高需拆给 wrapper） */
+#sb_container {
+    flex-direction: column;
+    align-items: stretch;
+    box-shadow: none;
+    border-radius: 0;
+}
+
+#searchbar-wrapper {
+    box-shadow: rgb(0 0 0 / 0.24) 0px 3px 8px;
+}
+
+/* 建议列表原本 top:2.5em 是相对"只有输入框"的容器算的，现在容器更高，改成 100% */
+#sb-suggestions {
+    top: 100%;
+}
+
+/* ---------- 分类标签（网页/图片/资讯/视频/地图）---------- */
+#wei8-search-tabs {
+    display: flex;
+    gap: .4em;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: .5em;
+}
+
+.wei8-tab {
+    font-size: .85em;
+    padding: .35em .9em;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    background: transparent;
+    color: rgb(var(--font-on-blur-color) / .6);
+    transition: all .15s;
+}
+
+.wei8-tab:hover {
+    background: #fff2;
+    color: rgb(var(--font-on-blur-color));
+}
+
+.wei8-tab.selected {
+    background: rgb(var(--accent-color) / .3);
+    border-color: rgb(var(--accent-color));
+    color: rgb(var(--font-on-blur-color));
+}
+
+/* ---------- 搜索引擎下拉 ---------- */
+#wei8-engine {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+#wei8-engine-btn {
+    display: flex;
+    align-items: center;
+    gap: .35em;
+    padding: 0 .8em;
+    height: 2.5em;
+    font-size: 1.05em;
+    color: rgb(var(--font-on-blur-color));
+    background: transparent;
+    border: none;
+    border-right: 1px solid rgb(var(--font-on-blur-color) / .25);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+/* 纯 CSS 向下小三角（用 ::after，不占用额外 DOM 文本，便于测试读取引擎名） */
+#wei8-engine-btn::after {
+    content: "\25BE";
+    font-size: .7em;
+    opacity: .8;
+    margin-left: .15em;
+}
+
+#wei8-engine-list {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    min-width: 100%;
+    z-index: 6;
+    padding: .35em;
+    border-radius: .7em;
+    background: var(--searchbar-background);
+    backdrop-filter: blur(2em);
+    -webkit-backdrop-filter: blur(2em);
+    border: 1px solid #fff1;
+    box-shadow: rgb(0 0 0 / .24) 0 3px 8px;
+}
+
+#wei8-engine-list.shown {
+    display: block;
+}
+
+.wei8-engine-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: .5em .9em;
+    border-radius: .45em;
+    font-size: 1em;
+    color: rgb(var(--font-on-blur-color));
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.wei8-engine-item:hover {
+    background: #fff3;
+}
+
+.wei8-engine-item.selected {
+    background: rgb(var(--accent-color) / .3);
+}
+
+/* 小屏：tabs 允许换行，下拉最小宽度收窄 */
+@media (max-width: 600px) {
+    #wei8-search-tabs {
+        flex-wrap: wrap;
+    }
+    #wei8-engine-list {
+        min-width: 8em;
+    }
+}
