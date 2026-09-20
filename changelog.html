@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.3</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.4</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,30 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.4</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>
+                            修复<strong>云同步一直报「Gist ID 无效」</strong>：设置里的 Gist ID 曾被存成字符串
+                            <code>"undefined"</code>，同步时会误以为「已有 Gist」而直接去更新一个不存在的 ID，于是必然失败。
+                            现在点同步相关按钮前会先清掉这种脏值，让程序回到「没有 Gist」的正确判断。
+                        </li>
+                        <li>
+                            云同步<strong>首次「发送」自动新建 Gist</strong>：不用再手动去 GitHub 建好、再回来填 ID。
+                            同步面板里加了中文说明，一眼能看懂要先发后收。
+                        </li>
+                        <li>
+                            加了<strong>令牌权限提示</strong>：云同步用的 token 必须带 Gists 写权限，否则发送会 403。
+                            细粒度令牌选 <em>Account permissions → Gists → Read and write</em>；经典令牌勾 <code>gist</code>。
+                        </li>
+                        <li>
+                            设置面板新增<strong>密码锁</strong>：打开设置需要输入密码（默认 <code>2026</code>），
+                            输对后 12 小时内免输。锁只是盖住面板内容，<strong>设置面板本身照常能打开</strong>，
+                            不会把设置锁死。
+                        </li>
+                    </ul>
+                </li>
+
+                <li>
                     <span class="ver">v3.3</span><span class="date">2026-09-20</span>
                     <ul class="changes">
                         <li>
