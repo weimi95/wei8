@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="robots" content="noindex" />
+        <title>wei8 导航站 · 更新日志</title>
+        <style>
+            /* 自包含单页：不引任何外部资源（字体/图标/JS 一律不带），
+               断网也能开。配色跟随系统深浅色，主色与导航站一致。 */
+            :root {
+                --accent: 41, 144, 255;
+                --bg: #f4f5f7;
+                --card: #ffffff;
+                --text: #1c1f24;
+                --muted: #6b7280;
+                --line: #e3e6ea;
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #17191d;
+                    --card: #212429;
+                    --text: #e8eaed;
+                    --muted: #9aa1ab;
+                    --line: #33373e;
+                }
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                padding: 2.5rem 1.25rem 4rem;
+                background: var(--bg);
+                color: var(--text);
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    "Segoe UI",
+                    "Microsoft YaHei",
+                    "PingFang SC",
+                    sans-serif;
+                font-size: 16px;
+                line-height: 1.7;
+                -webkit-font-smoothing: antialiased;
+            }
+            main {
+                max-width: 46rem;
+                margin: 0 auto;
+            }
+            header {
+                margin-bottom: 2.25rem;
+            }
+            h1 {
+                margin: 0 0 0.35rem;
+                font-size: 1.6rem;
+                font-weight: 600;
+                letter-spacing: 0.01em;
+            }
+            .sub {
+                margin: 0;
+                color: var(--muted);
+                font-size: 0.92rem;
+            }
+            .badge {
+                display: inline-block;
+                margin-left: 0.5rem;
+                padding: 0.1rem 0.6rem;
+                border-radius: 1rem;
+                background: rgb(var(--accent) / 0.15);
+                color: rgb(var(--accent));
+                font-size: 0.82rem;
+                font-weight: 600;
+                vertical-align: 0.12em;
+            }
+            /* 时间线：左侧竖线 + 圆点，纯 CSS，无图标字体 */
+            .log {
+                list-style: none;
+                margin: 0;
+                padding: 0 0 0 1.6rem;
+                border-left: 2px solid var(--line);
+            }
+            .log > li {
+                position: relative;
+                padding: 0 0 1.75rem;
+            }
+            .log > li::before {
+                content: "";
+                position: absolute;
+                left: -1.6rem;
+                top: 0.62rem;
+                width: 0.7rem;
+                height: 0.7rem;
+                margin-left: -0.36rem;
+                border-radius: 50%;
+                background: var(--muted);
+                box-shadow: 0 0 0 3px var(--bg);
+            }
+            .log > li.current::before {
+                background: rgb(var(--accent));
+            }
+            .ver {
+                font-weight: 600;
+                font-size: 1.02rem;
+            }
+            .log > li.current .ver {
+                color: rgb(var(--accent));
+            }
+            .date {
+                margin-left: 0.5rem;
+                color: var(--muted);
+                font-size: 0.85rem;
+                font-weight: 400;
+            }
+            ul.changes {
+                margin: 0.4rem 0 0;
+                padding-left: 1.15rem;
+            }
+            ul.changes li {
+                margin: 0.15rem 0;
+            }
+            ul.changes li::marker {
+                color: var(--muted);
+            }
+            strong {
+                font-weight: 600;
+            }
+            code {
+                padding: 0.1em 0.36em;
+                border-radius: 0.3em;
+                background: rgb(var(--accent) / 0.12);
+                color: rgb(var(--accent));
+                font-size: 0.88em;
+                font-family: ui-monospace, Consolas, "Courier New", monospace;
+                word-break: break-all;
+            }
+            section.credits {
+                margin-top: 0.5rem;
+                padding: 1.15rem 1.35rem;
+                border: 1px solid var(--line);
+                border-radius: 1rem;
+                background: var(--card);
+            }
+            section.credits h2 {
+                margin: 0 0 0.6rem;
+                font-size: 1rem;
+                font-weight: 600;
+            }
+            section.credits dl {
+                margin: 0;
+                display: grid;
+                grid-template-columns: max-content 1fr;
+                gap: 0.3rem 1.1rem;
+                font-size: 0.92rem;
+            }
+            section.credits dt {
+                color: var(--muted);
+                white-space: nowrap;
+            }
+            section.credits dd {
+                margin: 0;
+            }
+            footer {
+                margin-top: 2.5rem;
+                color: var(--muted);
+                font-size: 0.88rem;
+            }
+            a {
+                color: rgb(var(--accent));
+                text-decoration: none;
+            }
+            a:hover {
+                text-decoration: underline;
+            }
+            @media (max-width: 480px) {
+                section.credits dl {
+                    grid-template-columns: 1fr;
+                    gap: 0.1rem;
+                }
+                section.credits dd {
+                    margin-bottom: 0.55rem;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <header>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.2</span></h1>
+                <p class="sub">
+                    这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
+                    方便日后回看「某个功能是哪一版加的」。
+                </p>
+            </header>
+
+            <ul class="log">
+                <li class="current">
+                    <span class="ver">v3.2</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>
+                            修正<strong>定位城市错判</strong>：浏览器默认优先 IPv6，导致同一台机器被地理库判成
+                            「北京」。现在改为<strong>先取本机 IPv4、再按该 IPv4 查</strong>。
+                        </li>
+                        <li>修正备用定位源（<code>ip.zxinc.org</code>）的另一种响应格式解析失败的问题。</li>
+                        <li>
+                            点击天气的跳转目标由中国天气网改为<strong>和风天气</strong>城市页：
+                            走 https，且复用同一套城市编码。
+                        </li>
+                        <li>定位结果加版本守卫，换版后旧结果一次性作废，避免继续沿用错城市。</li>
+                        <li>新增本页（更新日志），入口在设置面板底部。</li>
+                    </ul>
+                </li>
+
+                <li>
+                    <span class="ver">v3.1</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>天气块显示<strong>当前所在城市名</strong>（如「泉州 · 毛毛雨」）。</li>
+                        <li>点击天气跳转到<strong>该城市</strong>的天气页，而不是天气门户首页。</li>
+                        <li>
+                            IP 定位改为<strong>双源链</strong>（ipwho.is → ip.zxinc.org），
+                            并新增 352 个城市的编码表。
+                        </li>
+                    </ul>
+                </li>
+
+                <li>
+                    <span class="ver">v3.0.1</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>版式调整：时间与天气<strong>并排一行</strong>，中间用竖线分隔，整体更紧凑。</li>
+                    </ul>
+                </li>
+
+                <li>
+                    <span class="ver">v3.0</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>
+                            整站迁移到 <code>https://weimi95.github.io/wei8/</code> 根路径，
+                            旧版（nightTab 改造）整体下线。
+                        </li>
+                    </ul>
+                </li>
+
+                <li>
+                    <span class="ver">v2.1</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>
+                            搜索增强：输入框左侧加<strong>引擎下拉</strong>
+                            （百度 / 必应 / 360 / 搜狗 / 谷歌 / 头条），上方加
+                            <strong>网页 / 图片 / 资讯 / 视频 / 地图</strong> 分类标签。
+                        </li>
+                        <li>引言换为 42 条中文正能量短句，每开一个新标签页换一条。</li>
+                    </ul>
+                </li>
+
+                <li>
+                    <span class="ver">v2.0</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>
+                            界面框架换为 Bonjourr。上游官方天气服务已失效（返回空数据），
+                            故加入改写层，天气数据改走 <strong>open-meteo</strong>（免费、无需注册）。
+                        </li>
+                        <li>天气数据源的切换入口并入界面自带的设置面板，不再单开一个配置页。</li>
+                    </ul>
+                </li>
+
+                <li>
+                    <span class="ver">v1.0</span><span class="date">2026-09-19</span>
+                    <ul class="changes">
+                        <li>初版上线：界面汉化、离线缓存、预填常用网址、部署到 GitHub Pages。</li>
+                    </ul>
+                </li>
+            </ul>
+
+            <section class="credits">
+                <h2>用到的开源项目与服务</h2>
+                <dl>
+                    <dt>界面框架</dt>
+                    <dd>
+                        <a href="https://github.com/victrme/Bonjourr" rel="noreferrer noopener" target="_blank"
+                            >Bonjourr</a
+                        >（GPL-3.0）— 本站是它的静态构建版，并按需做了中文化改造。
+                    </dd>
+                    <dt>天气数据</dt>
+                    <dd>
+                        <a href="https://open-meteo.com/" rel="noreferrer noopener" target="_blank">open-meteo</a
+                        >（默认，免密钥）；可选
+                        <a href="https://www.qweather.com/" rel="noreferrer noopener" target="_blank">和风天气</a>。
+                    </dd>
+                    <dt>IP 定位</dt>
+                    <dd>
+                        <a href="https://ipwho.is/" rel="noreferrer noopener" target="_blank">ipwho.is</a> ·
+                        <a href="https://ip.zxinc.org/" rel="noreferrer noopener" target="_blank">ip.zxinc.org</a>
+                    </dd>
+                    <dt>城市编码</dt>
+                    <dd>和风天气与中国天气网通用的一套 9 位编码。</dd>
+                    <dt>网页搜索</dt>
+                    <dd>百度 / 必应 / 360 / 搜狗 / 谷歌 / 头条（由本站自行拼接，不经过第三方中转）。</dd>
+                </dl>
+            </section>
+
+            <footer>
+                <p>
+                    说明：本站为个人自用起始页，与上述任何服务商均无隶属关系；
+                    天气与定位结果仅供参考。返回
+                    <a href="./">首页</a>。
+                </p>
+            </footer>
+        </main>
+    </body>
+</html>

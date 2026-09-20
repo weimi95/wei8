@@ -113,6 +113,12 @@
 
     // 天气每小时刷一次，定位没必要跟着每小时问一遍；6 小时足够跟上出差/回家
     var GEO_TTL = 6 * 3600 * 1000;
+    // ★ 缓存 schema 版本：只要**定位语义**变了（换源、换坐标来源、改强制 IPv4…）就必须换这个值，
+    //   让所有人手里的旧缓存**一次性作废**。
+    //   为什么非做不可：v3.1 走 IPv6 路径时会把**错误城市**（实测"北京"）连同 6 小时 TTL 一起落盘，
+    //   而 readGeoCache 原先只看 city/lat/lon 在不在 —— 装上新代码后仍会继续用那个错城市，
+    //   表现为"明明修好了，用户那边还是错的"，极难排查。
+    var GEO_SCHEMA = 'ipv4-1';
     // 定位失败后的退避窗口：绝不能让每次开标签页都去撞一次限流。
     // 取 10 分钟是个折中：既不把限流打成雪崩，也不会把一次偶发失败锁死太久。
     // 两个源各自独立计时，A 在退避时 B 照常工作。
@@ -406,6 +412,8 @@
             if (!raw) return null;
             var o = JSON.parse(raw);
             if (!o || !o.city || o.lat === undefined || o.lon === undefined) return null;
+            // 旧 schema 的缓存一律不认（见 GEO_SCHEMA 处的说明）
+            if (o.sv !== GEO_SCHEMA) return null;
             if (Date.now() - (o.ts || 0) > GEO_TTL) return null;
             return o;
         } catch (e) {
@@ -441,8 +449,12 @@
         try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
     }
 
+    // 统一盖 schema 章，两处写入点（源 A / 源 B）都不用各自记这件事
     function saveGeo(out) {
-        try { localStorage.setItem(GEO_KEY, JSON.stringify(out)); } catch (e) { /* ignore */ }
+        try {
+            out.sv = GEO_SCHEMA;
+            localStorage.setItem(GEO_KEY, JSON.stringify(out));
+        } catch (e) { /* ignore */ }
         return out;
     }
 
@@ -649,6 +661,10 @@
 
     function weatherPageUrl(city) {
         var code = findCityCode(city);
+        // ★ 2026-09-20 实测：和风会把 /<编码>.html **302** 规范化到 /<拼音>-<编码>.html
+        //   （如 101230501 -> quanzhou-101230501），浏览器自动跟跳，用户无感。
+        //   **这不是 bug，别去爬 352 条拼音来"消掉"这一跳** ——
+        //   纯编码形态是从编码唯一可推出的稳定入口，比拼音 slug 更抗上游改名。
         if (code) return 'https://www.qweather.com/weather/' + code + '.html';
         log('城市「' + city + '」不在编码表内，跳转回落和风首页（按其 IP 自动定位）');
         return 'https://www.qweather.com/';
