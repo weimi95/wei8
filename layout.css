@@ -1,0 +1,59 @@
+/* layout.css —— 版式覆盖层（由 build_bonjourr.js 注入，排在所有上游样式表之后）
+ * ---------------------------------------------------------------------------
+ * 做的两件事：
+ *   1) 把「时间」和「天气/问候」并到**同一行**，两块在中线处贴合，中间用一条竖线分隔；
+ *   2) 顺手收紧这两块之间的水平间距。
+ *
+ * 【为什么用 CSS 覆盖，而不是改 move.layouts 预置】
+ *   - #interface 的 `grid-template-areas: var(--grid)` 声明在**上游样式表**里
+ *     （src/styles/interface/global.css:15），不是内联样式；
+ *     本文件用同样的 `#interface` 选择器、但加载更晚 → 按层叠顺序直接胜出，不需要 !important。
+ *   - 改 move.layouts 属于「写用户设置」，要么递增 PRESET_VER（会把站点上所有调好的设置重写一遍），
+ *     要么做 localStorage 外科手术；纯 CSS 覆盖零副作用、可随时回退。
+ *
+ * ⚠️ 这里的命名区域必须覆盖「**所有已开启的移动组件**」。
+ *    少写一个名字，浏览器就会把那个组件丢进隐式网格（新增行列）→
+ *    表现为「组件跑到右下角 + 整块内容被挤偏」。这是本项目栽过两次的坑。
+ *    build_bonjourr.js 里有断言守着这一点：开启的组件与本文件的区域对不上就直接中止构建。
+ *    想开「笔记 / 番茄钟」时，记得在这里补一行（顺序放在最后即可）。
+ *
+ * 【分隔线为什么在 #time 上】
+ *   上游给这些组件设了 `place-self: center`（global.css:50），
+ *   所以两块默认各自居中在自己那半边、中间空一大截。
+ *   改成 #time 靠右、#main 靠左，两块才会在中线处贴成一组；
+ *   竖线就画在 #time 的右边缘上，视觉上正好落在两块中间。
+ * ---------------------------------------------------------------------------
+ */
+
+#interface {
+    /* 第一行两列（时间 | 天气），其余组件各自横跨整行，保持原来的满宽观感 */
+    grid-template-areas:
+        'time main'
+        'searchbar searchbar'
+        'quicklinks quicklinks'
+        'quotes quotes';
+    /* 两列等宽 → 中线落在页面正中；后续几行跨两列，宽度不变 */
+    grid-template-columns: 1fr 1fr;
+    /* 列间距归零：第一行两块的呼吸间距改由 #time/#main 的 padding 精确控制，
+       否则「网格 gap + 两侧 padding」会叠成一大段空隙，显得松散。
+       后面几行都是跨两列的单块，列间距对它们无影响。 */
+    column-gap: 0;
+}
+
+/* 时间：靠右，右边缘画竖线 */
+#time {
+    justify-self: end;
+    padding-right: 0.75em;
+    /* 竖线要「贯穿两块」，而 #time 自身内容比天气块矮（9x vs 11x px）。
+       上下各补一点 padding 把边框撑到与天气块齐平，再靠 align-self:center 整体居中，
+       文字位置不受影响（padding 是对称的）。 */
+    padding-top: 0.8em;
+    padding-bottom: 0.8em;
+    border-right: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+/* 天气/问候：靠左，与竖线保持同样的呼吸间距 */
+#main {
+    justify-self: start;
+    padding-left: 0.75em;
+}
