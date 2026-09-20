@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.6</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.7</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,25 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.7</span><span class="date">2026-09-20</span>
+                    <ul class="changes">
+                        <li>
+                            「同步」这一行的<strong>右侧直接显示服务器那份的最后更新时间</strong>，
+                            格式固定为 <code>2026/0920/193205</code>（年/月日/时分秒，全数字、可排序）。
+                            服务器还没存过时显示「尚未同步」，不会空白、也不会显示假时间。
+                        </li>
+                        <li>
+                            时间戳<strong>首次出现前会加快刷新</strong>（3 秒一次，最多十次），
+                            因此刚打开设置面板、或刚填好令牌时马上就能看到，不用等一分钟。
+                        </li>
+                        <li>
+                            修了一个<strong>自动同步的漏推问题</strong>：原来判断「数据变没变」只比较了最外层字段，
+                            导致只改里层设置（例如时钟、天气、搜索这些子选项）时<strong>不会自动推送</strong>。
+                            现改为逐层深度比较，任何一处改动都会推。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.6</span><span class="date">2026-09-20</span>
                     <ul class="changes">
                         <li>

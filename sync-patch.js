@@ -4,18 +4,22 @@
  * localStorage，使 gistId 变成真值字符串 → sendGist() 的「首次新建 Gist」分支
  * 永远进不去 → 报 "Invalid Gist ID in settings."。详见下方 cleanDirty。
  *
- * 本层做三件事：
+ * 本层做五件事：
  *   A. 装载期 + 点「发送/得到」前，清掉这种「被写成字符串的 undefined/null/NaN」，
  *      让 gistId 真正回到 undefined，使上游的新建分支能正常命中。
  *   B. 在同步区块补中文提示（首次自动建 Gist + token 需 Gists 写权限）。
- *   C. ★ 新增 ★
- *      - 服务器版本时间戳：GET /gists/{id} 取 updated_at（精确到秒，本地时区），
- *        渲染到「Server status」区块，方便判断服务器版本是否比本地旧。
- *      - 自动同步：监听上游 localStorage['bonjourr'] 变更事件（storage sync.set
- *        在 localstorage 模式下会 dispatchEvent(new Event('storage'))），当
- *        「有变更 + token 有效 + gistId 存在」时自动 PATCH 推送；首次（gistId 为
- *        undefined）自动 POST 建 Gist 并记住返回的 id。
- *        token 无效时降级为手动（不自动推），并在状态区提示。
+ *   C. 服务器版本时间戳：GET /gists/{id} 取 updated_at（精确到秒，本地时区）。
+ *   D. ★ 最后更新时间显示在「同步」行标签右边 ★（老板指定位置与格式）
+ *      - 位置：「同步」(Synchronize) 的 `.wrapper` 内、标签与「得到/发送」之间，
+ *        margin-right:auto 让它紧贴标签（该 wrapper 是 flex + space-between）。
+ *      - 格式：`2026/0920/193205`（年/月日/时分秒，全数字、可排序、可肉眼比对）。
+ *      - 取值：服务器 Gist 的 updated_at（= 最后一次同步时间），无 Gist 时显示「尚未同步」。
+ *      - 不设 font-size：与同排标签保持同一排版尺度（v3.3 的教训）。
+ *   E. 自动同步：监听上游 localStorage['bonjourr'] 变更事件（storage sync.set
+ *      在 localstorage 模式下会 dispatchEvent(new Event('storage'))），当
+ *      「有变更 + token 有效」时自动推送；首次（gistId 为 undefined）自动 POST
+ *      建 Gist 并记住返回的 id。
+ *      token 无效时降级为手动（不自动推），并在状态区提示。
  *
  * 注意：本层只清「明显是序列化残渣」的值，不动任何正常字符串；自动同步的推送
  * 走同源 https://api.github.com/gists，复用本地已登录态/令牌，不引入新凭据。
@@ -56,6 +60,7 @@
         gistId: null,
         lastAutoAt: 0,
         lastServerAt: null, // 服务器 updated_at（本地时区字符串）
+        lastTimeText: null, // 「同步」行右边当前显示的文字（探针读它）
         lastError: null,
     };
 
@@ -93,7 +98,7 @@
         var tips = [
             '首次使用：点「发送」会在你的 GitHub 自动建一个私有 Gist（不用自己去建）。',
             'Token 需勾选 Gists 写权限：Account permissions → Gists → Read and write（classic token 则勾 gist）。',
-            '自动同步：本地数据一有改动、且令牌有效，就会自动推送到 Gist（下方显示服务器版本时间，便于判断哪份新）。',
+            '自动同步：本地数据一有改动、且令牌有效，就会自动推送到 Gist（「同步」右侧显示服务器那份的最后更新时间，便于判断哪份新）。',
         ];
         for (var i = 0; i < tips.length; i++) {
             var line = document.createElement('div');
@@ -161,14 +166,25 @@
         }
     }
 
-    // 哈希：用稳定排序的 JSON 字符串（避免键序抖动造成误判「变了」）
+    // 哈希：稳定序列化（键名排序 + 递归深度遍历），用来判断「数据是不是真的变了」。
+    // ★ 绝不能写成 JSON.stringify(obj, Object.keys(obj).sort())：replacer 传**数组**时
+    //   它是「属性白名单」而且**对每一层都生效** —— 嵌套对象的键不在顶层白名单里，
+    //   会被整层丢掉（clock/weather 都变成 {}），于是任何「只改嵌套设置」的改动都算出
+    //   同一个哈希、被判成「没变」而不再自动推送。这个坑是 probe_sync.js 实机跑出来的
+    //   （症状：第一次推送成功后再改任何设置，autoSynced 永远停在 1）。
     function stableHash(obj) {
-        if (!obj) return '';
-        try {
-            return JSON.stringify(obj, Object.keys(obj).sort());
-        } catch (e) {
-            return JSON.stringify(obj);
+        if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+        if (Array.isArray(obj)) {
+            var items = [];
+            for (var i = 0; i < obj.length; i++) items.push(stableHash(obj[i]));
+            return '[' + items.join(',') + ']';
         }
+        var keys = Object.keys(obj).sort();
+        var pairs = [];
+        for (var j = 0; j < keys.length; j++) {
+            pairs.push(JSON.stringify(keys[j]) + ':' + stableHash(obj[keys[j]]));
+        }
+        return '{' + pairs.join(',') + '}';
     }
 
     // 取服务器 Gist 元信息（含 updated_at 精确到秒）
@@ -180,33 +196,84 @@
         };
     }
 
-    // 渲染到「Server status」区块：base 文案 + 链接（服务器版本时间，精确到秒）
+    // 时间戳格式：2026/0920/193205（年/月日/时分秒）
+    // 全数字、无空格、按字典序即按时间序 —— 适合肉眼比对哪份新。
+    function fmtTs(d) {
+        var p = function (n) { return (n < 10 ? '0' : '') + n; };
+        return (
+            d.getFullYear() + '/' + p(d.getMonth() + 1) + p(d.getDate()) +
+            '/' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds())
+        );
+    }
+
+    // 「同步」行标签右边的时间戳节点。
+    // 位置依据（settings.html:2066-2084）：
+    //   <div class="wrapper">            <- flex + space-between + align-items:center
+    //     <span class="trn">Synchronize</span>
+    //     <div id="gist-sync-actions">   <- 得到/发送
+    // 插到 actions 之前 = 标签右边；margin-right:auto 吃掉剩余空间 → 紧贴标签、按钮仍靠右。
+    // 不设 font-size：与同排「同步」标签保持同一排版尺度（v3.3 栽过的坑）。
+    function ensureTimeEl() {
+        var el = document.getElementById('wei8-sync-time');
+        if (el) return el;
+        var actions = document.getElementById('gist-sync-actions');
+        if (!actions || !actions.parentNode) return null;
+        el = document.createElement('span');
+        el.id = 'wei8-sync-time';
+        el.style.opacity = '0.7';
+        el.style.marginLeft = '0.6em';
+        el.style.marginRight = 'auto';
+        actions.parentNode.insertBefore(el, actions);
+        return el;
+    }
+
+    function setTimeText(txt) {
+        window.__wei8Sync.lastTimeText = txt;
+        var el = ensureTimeEl();
+        if (el && el.textContent !== txt) el.textContent = txt;
+    }
+
+    // 渲染「同步」行时间戳 + 「Server status」行（两处同源，避免各写一套状态判断）
     function renderServerStatus(token, id) {
         var base = document.getElementById('gist-sync-status-base');
-        if (!base) return;
+
+        // 状态归一：state = 给「Server status」行的短词；ts = 给「同步」行的时间/占位词
+        function idle(state, ts) {
+            if (base) base.textContent = state;
+            setTimeText(ts);
+        }
+
         if (!token) {
-            base.textContent = '等待认证';
+            idle('等待认证', '未配置令牌');
             return;
         }
         if (!id) {
-            base.textContent = '尚无保存的数据';
+            idle('尚无保存的数据', '尚未同步');
             return;
         }
         fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token) })
             .then(function (resp) {
+                if (resp.status === 401) {
+                    idle('令牌无效', '令牌无效');
+                    return null;
+                }
+                if (resp.status === 403) {
+                    idle('令牌缺 Gists 权限', '令牌缺权限');
+                    return null;
+                }
                 if (resp.status !== 200) {
-                    base.textContent = id === undefined ? '尚无保存的数据' : '服务器无数据';
+                    idle('服务器无数据', '读取失败');
                     return null;
                 }
                 return resp.json().then(function (json) {
-                    var iso = json.updated_at;
-                    var d = new Date(iso);
-                    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
-                    var localStr =
-                        d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
-                        ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+                    var localStr = fmtTs(new Date(json.updated_at));
                     window.__wei8Sync.lastServerAt = localStr;
 
+                    // ① 「同步」行后面的最后更新时间（老板要的位置）
+                    setTimeText(localStr);
+
+                    // ② 原「Server status」行：只留时间（做成指向 Gist 网页的链接）
+                    //    注意别再把「服务器版本」四个字重复写两遍（base 清空，文字只由 link 承担）
                     var wrapper = document.getElementById('gist-sync-status-wrapper');
                     var old = document.querySelector('#gist-sync-status');
                     if (old && old.parentNode) old.parentNode.removeChild(old);
@@ -215,10 +282,10 @@
                         var link = document.createElement('a');
                         link.id = 'gist-sync-status';
                         link.href = json.html_url;
-                        link.textContent = '服务器版本 ' + localStr;
+                        link.textContent = localStr;
                         wrapper.appendChild(link);
                     }
-                    base.textContent = '服务器版本';
+                    if (base) base.textContent = '';
                 });
             })
             .catch(function () {
@@ -327,18 +394,27 @@
         }, 2000);
     }
 
-    // 轮询刷新服务器版本时间戳（首次进入设置 + 每 60s 一次，仅当有 token+id）
+    // 轮询刷新「同步」行的最后更新时间
+    //   常态 60s 一次（够用且安静）；
+    //   但**首次渲染出来之前**改成 3s 快跑（最多 10 次）—— 覆盖三种真实场景：
+    //     ① 面板刚打开、DOM 才就位；② 用户刚提交令牌（localStorage 是后写的）；
+    //     ③ 自动化探针在页面加载后才注入令牌。
+    //   不这么做的话，这三种情况下时间戳要等满 60s 才出现，看起来像「功能没生效」。
     function startPoll() {
         if (state.polling) return;
         state.polling = true;
+        var fast = 0;
         function tick() {
             var token = readLocal('gistToken');
             var idRaw = readLocal('gistId');
             var id = (idRaw && idRaw !== 'undefined' && idRaw !== 'null' && idRaw !== 'NaN') ? idRaw : null;
-            if (token && id) {
+            // 有令牌就渲染：没 id 时也要把「尚未同步」显示出来，否则「同步」右边一直空着
+            if (token) {
                 renderServerStatus(token, id);
             }
-            setTimeout(tick, 60000);
+            var pending = window.__wei8Sync.lastTimeText === null && fast < 10;
+            if (pending) fast++;
+            setTimeout(tick, pending ? 3000 : 60000);
         }
         tick();
     }
