@@ -77,11 +77,13 @@
             if (!el) {
                 el = document.createElement('span');
                 el.id = LABEL_ID;
-                // 内联样式：只是一个新节点，不值得再开一个样式表 + 版本号
-                el.style.fontSize = '0.8em';
-                el.style.opacity = '0.8';
+                // 内联样式：只是一个新节点，不值得再开一个样式表 + 版本号。
+                // 字号/透明度刻意都**不设** —— 早期给它设过 fontSize:0.8em + opacity:0.8，
+                // 想当成一个「城市标签」，但实测 #description 是 17.06px、它只有 13.65px，
+                // 与后面的「晴间多云。现在气温 31°C。」差了近 4px，基线还错开 3px，
+                // 读起来像两个东西拼在一起。地名本来就是那句话的开头（「泉州 · 晴间多云…」），
+                // 跟随父元素字号才是最自然的。
                 el.style.whiteSpace = 'nowrap';
-                el.style.letterSpacing = '0.02em';
                 desc.insertBefore(el, desc.firstChild);
                 log('已插入地名节点，值为 ' + city);
             }
