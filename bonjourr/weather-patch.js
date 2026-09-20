@@ -21,7 +21,15 @@
  * 前端期望的结构。零上游源码改动，删掉本文件即可完全回滚。
  *
  * 【配置】localStorage['wei8-weather'] = {"p":"openmeteo"|"qweather","key":"...","host":"..."}
- *   建议用同目录的 weather-config.html 图形化设置（含连通性自测）。
+ *   切换入口在 Bonjourr 自带设置面板 → Weather & Greetings → 「天气数据源」
+ *   （由同目录的 weather-settings.js 注入，含连通性自测；不再有独立的配置页）。
+ *
+ * 【v2 修复 2026-09-20】两处真实缺陷，均由无头浏览器 CDP 探针（probe_live.js）定位：
+ *   1) 取 URL 用 `input.url`，而 URL 实例上是 `href` -> url 恒为空串 -> 劫持从未生效。
+ *      改为 urlOf()，覆盖 string / URL / Request 三种入参形态。
+ *   2) query 参数是双重编码，必须再 decodeURIComponent 一次，否则城市名变脏值。
+ *   历史教训：此前"实测通过"都是拿字符串 URL 手测的，字符串分支一直正常，
+ *   所以缺陷被完整掩盖。拦截层一定要用**真实调用方的入参形态**验证。
  * ---------------------------------------------------------------------------
  */
 (function () {
@@ -155,6 +163,39 @@
             if (v !== undefined && v !== null && v !== '') return v;
         }
         return undefined;
+    }
+
+    // ---------------------------------------------------------------------
+    // 【2026-09-20 关键修复】从 fetch 的第一个入参里可靠地取出 URL 字符串
+    //
+    // 原写法 `input.url` 有一个致命盲点：Bonjourr 的 requestNewWeather 传的是
+    // **URL 对象**（产物 main.js:10556 `const url = new URL("https://weather.bonjourr.fr/")`
+    // -> :10570 `await fetch(url)`）。URL 实例上取 URL 的属性是 `href`，
+    // 没有 `url`（`url` 这个别名只存在于 HTMLAnchorElement / HTMLAreaElement）。
+    // 于是 input.url === undefined -> url 变成空串 -> indexOf(UPSTREAM) 恒为 -1
+    // -> **每条请求都走最底下的透传分支**，劫持层形同不存在。
+    //
+    // 后果链（实测线上同款）：真实请求打到已失效的上游 weather.bonjourr.fr，
+    // 它返回 200 + 空 body；request.ts:10574 的 `response?.json()` 抛
+    // SyntaxError: Unexpected end of JSON input；firstStartWeather 是 async 且无
+    // try/catch -> 未捕获 rejection -> displayWeather 永不执行 -> 天气组件永远
+    // 停在 class="wait init" 且空白（display.ts:143 的摘 class 代码在最后，任何
+    // 中途抛错都会留下这个现象）。
+    //
+    // 之所以长期没被发现：验证时一律用字符串 URL 手测，字符串分支一直是好的。
+    // 教训：拦截层必须把 fetch 的三种入参形态（string / URL / Request）都覆盖到。
+    // ---------------------------------------------------------------------
+    function urlOf(input) {
+        if (typeof input === 'string') return input;
+        if (input) {
+            if (typeof input.href === 'string') return input.href;   // URL 对象
+            if (typeof input.url === 'string') return input.url;     // Request 对象
+        }
+        try {
+            return String(input);
+        } catch (e) {
+            return '';
+        }
     }
 
     function num(v) {
@@ -358,9 +399,21 @@
         if (qLat !== undefined && qLon !== undefined && qLat !== 0 && qLon !== 0) {
             coords = [qLat, qLon];            // geolocation=precise 时 Bonjourr 会带上
         } else if (qCity) {
-            // 注意：URLSearchParams.get() 已经解码过一次，这里不能再 decodeURIComponent，
-            // 否则城市名里的字面量 % 会被二次解码搞坏。
+            // 【2026-09-20 修正】这里必须再解码一次。
+            // 上游 request.ts:56-59 先把城市名 encodeURIComponent，再交给
+            // url.searchParams.set('query', q)，而 searchParams 序列化时会再编码一次
+            // '%' -> '%25'，实际发出的 query 是双重编码的：
+            //   泉州 -> encodeURIComponent -> %E6%B3%89%E5%B7%9E -> 序列化 -> %25E6%25B3%2589%25E5%25B7%259E
+            // （CDP 抓到的真实请求即为 %25E6%25B3%2589%25E5%25B7%259E）
+            // 因此 searchParams.get() 只解掉一层，拿到的仍是 '%E6%B3%89%E5%B7%9E'。
+            // 不解码的后果：本地城市表查不到 -> 坐标回落默认城市（碰巧相同，掩盖了问题），
+            // 且 cityName 变成 '%E6%B3%89%E5%B7%9E' 被 firstStartWeather 回写进
+            // data.city（request.ts:128），把用户的城市设置污染成百分号串。
+            // 旧注释"不能再 decodeURIComponent"是错的。
             var asked = String(qCity).trim();
+            try {
+                asked = decodeURIComponent(asked);
+            } catch (e) { /* 不是合法百分号序列就原样用 */ }
             cityName = asked || DEFAULT_CITY;
             coords = resolveCoords(asked);    // geolocation=off 走这里
         } else {
@@ -397,6 +450,7 @@
             })
             .catch(function (e) {
                 log('全部数据源失败：' + (e && e.message));
+                stats.lastError = String(e && e.message || e);
                 // 兜底 1：用上一次成功的结果，避免天气组件整个消失
                 try {
                     var last = localStorage.getItem(LAST_KEY);
@@ -411,6 +465,11 @@
             });
     }
 
+    // 运行时可观测标记：给自动化校验（probe_live.js）一个可断言的证据点，
+    // 用来区分「劫持层压根没接上」和「接上了但数据源失败」。
+    var stats = { installed: false, hits: 0, lastUrl: '', lastError: '' };
+    try { window.__wei8Weather = stats; } catch (e) { /* ignore */ }
+
     // ---------------------------------------------------------------------
     // 安装劫持
     // ---------------------------------------------------------------------
@@ -419,12 +478,10 @@
         console.warn('[wei8-weather] 当前环境没有 window.fetch，天气改写未生效');
         return;
     }
+    stats.installed = true;
 
     window.fetch = function (input, init) {
-        var url = '';
-        try {
-            url = typeof input === 'string' ? input : (input && input.url) || '';
-        } catch (e) { /* ignore */ }
+        var url = urlOf(input);
 
         if (url.indexOf(UPSTREAM) === 0) {
             // 城市搜索建议走的是 provider=accuweather&geo=true，该分支上游仍正常
@@ -435,6 +492,8 @@
             }
 
             log('接管天气请求：' + url);
+            stats.hits++;
+            stats.lastUrl = url;
             return buildWeather(url).then(jsonResponse);
         }
 

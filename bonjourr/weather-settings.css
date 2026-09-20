@@ -1,0 +1,80 @@
+/* weather-settings.css
+ * ---------------------------------------------------------------------------
+ * weather-settings.js 注入设置面板区块所需的**极少量**样式。
+ *
+ * 设计原则：能用上游既有类的绝不自己写。行容器用 .wrapper、分隔线用 hr、
+ * 按钮用 aside .param-btn、输入框与下拉用 aside input / aside select，
+ * 这些都在上游 settings/inputs.css 里定义好了（并且跟随 --color-input /
+ * --accent-color 等主题变量）。本文件只补上游没有的四处：
+ *   1) 显隐开关（不用上游 .dropdown，避免与其 toggle 逻辑打架）
+ *   2) 说明小字
+ *   3) 操作按钮行
+ *   4) 状态行（成功/失败/进行中三态）
+ * 全部使用上游 :root 里的主题变量，不硬编码颜色（除作为兜底的 rgb 回退值）。
+ * ---------------------------------------------------------------------------
+ */
+
+.wei8-wx-hidden {
+    display: none !important;
+}
+
+/* 说明小字：跟随主题文字色，靠透明度压下去，避免在浅色主题下对比度不足 */
+#wei8-wx-block .wei8-wx-note {
+    margin: 2px 4px 8px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--color-text);
+    opacity: 0.6;
+}
+
+/* 操作按钮行：右对齐，和 .wrapper 内部的控件位置保持一致 */
+#wei8-wx-block .wei8-wx-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 6px;
+    padding: 4px;
+    min-height: 31px;
+}
+
+/* 状态行：空的时候不占高度，避免在设置面板里留一条空带 */
+#wei8-wx-block .wei8-wx-status {
+    margin: 0 4px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--color-text);
+    opacity: 0.72;
+    word-break: break-word;
+}
+
+#wei8-wx-block .wei8-wx-status:empty {
+    display: none;
+}
+
+#wei8-wx-block .wei8-wx-status.ok {
+    color: rgb(var(--color-green, 46 208 88));
+    opacity: 1;
+}
+
+#wei8-wx-block .wei8-wx-status.bad {
+    color: rgb(var(--danger-color, 224 87 79));
+    opacity: 1;
+}
+
+#wei8-wx-block .wei8-wx-status.wait {
+    opacity: 0.55;
+}
+
+#wei8-wx-block .wei8-wx-status a {
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* 窄面板下三个按钮不要换行挤成两行 */
+@media only screen and (max-width: 340px) {
+    #wei8-wx-block .wei8-wx-actions {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+    }
+}
