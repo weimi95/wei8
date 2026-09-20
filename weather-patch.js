@@ -187,6 +187,32 @@
     })();
 
     // ---------------------------------------------------------------------
+    // 一次性迁移 3：定位缓存 schema 升级 -> 连带清掉「上次天气结果」
+    //
+    // 为什么光有 readGeoCache 的 sv 守卫还不够：
+    //   上游 weatherCacheControl 有一小时守卫（isAnHourLater = now > last + 3600000）——
+    //   一小时内它**根本不调我们的 fetch**，于是我们那层连跑都没跑，用户就还看着
+    //   那条基于旧定位（实测「北京」）算出来的天气与城市名，得等满一小时才自愈。
+    //   所以要在脚本装载时就把陈旧的定位缓存与上次天气结果一起清掉，让本次就重新定位。
+    //
+    // 为什么不用独立标记键：**sv 字段本身就是条件**，不用额外记「迁移跑过没」。
+    //   清完 wei8-geo 之后下次进来读不到缓存 -> 直接 return，天然幂等。
+    // ---------------------------------------------------------------------
+    (function migrateGeoSchema() {
+        try {
+            var raw = localStorage.getItem(GEO_KEY);
+            if (!raw) return;                       // 没有定位缓存，无需处理
+            var o = null;
+            try { o = JSON.parse(raw); } catch (e) { o = null; }
+            if (o && o.sv === GEO_SCHEMA) return;    // 已是当前 schema，绝不动
+            localStorage.removeItem(GEO_KEY);
+            localStorage.removeItem(LAST_KEY);       // 我们自己的「上次成功天气」
+            localStorage.removeItem('lastWeather');  // 上游的天气缓存（一小时守卫挂在它身上）
+            log('定位缓存 schema 升级：已清掉旧定位与上次天气结果，本次将重新定位');
+        } catch (e) { /* localStorage 不可用时静默跳过 */ }
+    })();
+
+    // ---------------------------------------------------------------------
     // 中文城市名 → [纬度, 经度]
     // 为什么需要本地表：open-meteo 的 geocoding 接口【中文入参查不到】
     // （实测 name=泉州 返回空对象，name=Quanzhou 才命中），
