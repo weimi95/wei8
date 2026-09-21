@@ -266,6 +266,12 @@
                     idle('令牌缺 Gists 权限', '令牌缺权限');
                     return null;
                 }
+                if (resp.status === 404) {
+                    // 404 = gistId 悬空（服务器那份被删了，比如在 GitHub 上手动删过）。
+                    // 不写「读取失败」吓人：自动推送马上会重建，重建成功后这里会被刷新成真时间。
+                    idle('云端已删除', '重建中');
+                    return null;
+                }
                 if (resp.status !== 200) {
                     idle('服务器无数据', '读取失败');
                     return null;
@@ -395,7 +401,16 @@
                     return;
                 }
                 if (resp.status === 404) {
-                    window.__wei8Sync.lastError = '404 Gist 不存在（服务器那份已被删，改回手动「发送」重建）';
+                    // ★ 404 自愈：gistId 悬空（服务器那份被删，例如在 GitHub 上手动删过、
+                    //   或换 token 后指到了别的账号）。旧逻辑只会报错卡死在「Gist 不存在」，
+                    //   老板真机就中过（时间戳一直「读取失败」）。
+                    //   正解：清掉失效 id → 排队补推。done() 会立刻再跑一次 autoPush，
+                    //   那时 id 为 null → 走 POST 重建 → 成功后写回新 id 并刷新时间戳。
+                    //   不会死循环：重建失败（401/403）会置 tokenOk 并停止，queued 只置这一次。
+                    try { localStorage.removeItem('gistId'); } catch (e) { /* ignore */ }
+                    window.__wei8Sync.gistId = null;
+                    window.__wei8Sync.lastError = '404 云端 Gist 已不存在，正在自动重建…';
+                    state.queued = true;
                     return;
                 }
                 window.__wei8Sync.lastError = '推送失败 HTTP ' + resp.status;

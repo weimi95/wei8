@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.7</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.8</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,21 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.8</span><span class="date">2026-09-21</span>
+                    <ul class="changes">
+                        <li>
+                            修了一个<strong>同步卡死问题</strong>：如果服务器上的 Gist 被删掉
+                            （例如在 GitHub 网页上手动删过），时间戳会一直显示「读取失败」、
+                            自动同步也会卡在「Gist 不存在」不再工作。
+                        </li>
+                        <li>
+                            现在<strong>遇到这种情况会自动重建</strong>：清掉失效的 Gist 编号，
+                            下一轮自动同步把本地数据重新推上去、记下新编号，时间戳恢复显示。
+                            全程无需手动处理。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.7</span><span class="date">2026-09-20</span>
                     <ul class="changes">
                         <li>
