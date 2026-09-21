@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.14</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.15</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,30 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.15</span><span class="date">2026-09-21</span>
+                    <ul class="changes">
+                        <li>
+                            <strong>「更改密码」按钮行理顺了</strong>：「保存 / 取消」从挤在密码框下面
+                            挪到<strong>「更改密码」右侧同一行</strong>，整块更紧凑；
+                            而且默认跟着密码表单一起隐藏——没点开「更改密码」之前不会看到它们。
+                        </li>
+                        <li>
+                            三个密码框（当前密码 / 新密码 / 再输一遍新密码）之间的
+                            <strong>间距拉开</strong>，「再输一遍新密码」不再贴着上一行。
+                        </li>
+                        <li>
+                            <strong>同步时间戳改成常驻记录表</strong>：原来要点一下才弹出的下拉菜单，
+                            改为<strong>固定显示最近 3 条</strong>记录（时间 + 自动/手动），超过 3 条自动出滚动条，
+                            一眼就能看到最近几次同步是什么时候。
+                        </li>
+                        <li>
+                            修了记录表和主时间戳<strong>显示时间不一致</strong>的问题：
+                            记录表首行现在和「同步」右边的时间戳指向同一时刻
+                            （都取云端的实际更新时间）。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.14</span><span class="date">2026-09-21</span>
                     <ul class="changes">
                         <li>

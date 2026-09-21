@@ -51,6 +51,40 @@
 
     var ROOT = document.documentElement;
 
+    /* ★ 必须定义在所有 buildPassSection() 调用点之前（第 89~93 行的 bootPass 在 IIFE
+       顶部就同步调用它）。var 只提升声明、不提升赋值——定义放在下方时会读到 undefined，
+       抛 TypeError 让区块构建中断（v3.16 实测踩中：区块挂不上、注入的样式 len=0）。 */
+    var PASS_CSS = [
+        // v3.16：三个密码框之间的间距 .5em → .95em（老板反馈「再输一遍新密码」挤太紧）
+        '#wei8-pass-form { display: none; flex-direction: column; gap: .95em; margin-top: .8em; }',
+        '#wei8-pass-form.open { display: flex; }',
+        '#wei8-pass-form input {',
+        '  font: inherit; font-size: .95em; padding: .5em .7em; border-radius: 10px; outline: none;',
+        '  border: 1px solid var(--color-border, #c8c7cc);',
+        '  background: var(--color-input, #eaeaee); color: var(--color-text, #222);',
+        '  letter-spacing: .18em;',
+        '}',
+        '#wei8-pass-form input::placeholder { letter-spacing: normal; opacity: .6; }',
+        // v3.16（老板定稿）：「保存/取消」挪到「更改密码」右侧同一行（红框位置）。
+        //   .wrapper 是 flex + space-between，只有**两个直接子元素**时才会贴两端 →
+        //   必须把「更改密码」和按钮行包进一个 .wei8-pass-actions 容器，否则三件套会被
+        //   space-between 撑开、散在标签与右缘之间。字号 .9em→.8em 保证一行放得下。
+        //   按钮行默认隐藏、只在表单展开时才出现：空表单点「保存」只会弹「当前密码不对」。
+        '.wei8-pass-actions { display: flex; align-items: center; gap: .55em; }',
+        '.wei8-pass-row { display: none; gap: .55em; }',
+        '.wei8-pass-row.show { display: flex; }',
+        '.wei8-pass-row button {',
+        '  font: inherit; font-size: .8em; padding: .4em 1.05em; border: 0; cursor: pointer;',
+        '  border-radius: 999px; background: rgb(var(--accent-color, 41 144 255) / .15);',
+        '  color: rgb(var(--accent-color, 41 144 255));',
+        '}',
+        '.wei8-pass-row button.ghost { background: none; color: var(--color-light-text, #5a5858); }',
+        '.wei8-pass-msg { min-height: 1.1em; font-size: .85em; }',
+        '.wei8-pass-msg.bad { color: rgb(var(--danger-color, 230 75 67)); }',
+        '.wei8-pass-msg.good { color: rgb(var(--color-green, 80 200 120)); }',
+        '.wei8-pass-note { font-size: .8em; line-height: 1.5; opacity: .7; margin-top: .15em; }',
+    ].join('\n');
+
     // 取当前生效密码：用户设置过的优先，否则默认
     function getPass() {
         try {
@@ -250,21 +284,6 @@
         return true;
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function () {
-            buildPassSection();
-            watchPassSection();
-            build();
-        }, { once: true });
-    } else {
-        buildPassSection();
-        watchPassSection();
-        if (!build()) {
-            // 理论上 defer 脚本执行时 DOM 已解析完；万一没有，退到 DOMContentLoaded 再试一次
-            document.addEventListener('DOMContentLoaded', build, { once: true });
-        }
-    }
-
     // ==================== v3.12 设置面板「锁屏密码」区块 ====================
     // 位置（v3.15 起老板定稿）：「设置管理」区块（#settings-management_title）的**区块内
     // 顶部** —— 跟同步/导入导出等管理功能放一栏，不再单独占一栏。找不到该锚点时回落
@@ -276,28 +295,6 @@
     //   —— 必须先过锁，再加上「保存」要验当前密码，双重防止身边人改密码。
     // ★ v3.15 幂等重挂：上游某些路径（如语言切换重渲染）理论上可能动到面板 DOM，
     //   MutationObserver 盯着 aside，区块一旦不在就立刻补回（buildPassSection 幂等）。
-    var PASS_CSS = [
-        '#wei8-pass-form { display: none; flex-direction: column; gap: .5em; margin-top: .55em; }',
-        '#wei8-pass-form.open { display: flex; }',
-        '#wei8-pass-form input {',
-        '  font: inherit; font-size: .95em; padding: .5em .7em; border-radius: 10px; outline: none;',
-        '  border: 1px solid var(--color-border, #c8c7cc);',
-        '  background: var(--color-input, #eaeaee); color: var(--color-text, #222);',
-        '  letter-spacing: .18em;',
-        '}',
-        '#wei8-pass-form input::placeholder { letter-spacing: normal; opacity: .6; }',
-        '.wei8-pass-row { display: flex; gap: .6em; }',
-        '.wei8-pass-row button {',
-        '  font: inherit; font-size: .9em; padding: .45em 1.15em; border: 0; cursor: pointer;',
-        '  border-radius: 999px; background: rgb(var(--accent-color, 41 144 255) / .15);',
-        '  color: rgb(var(--accent-color, 41 144 255));',
-        '}',
-        '.wei8-pass-row button.ghost { background: none; color: var(--color-light-text, #5a5858); }',
-        '.wei8-pass-msg { min-height: 1.1em; font-size: .85em; }',
-        '.wei8-pass-msg.bad { color: rgb(var(--danger-color, 230 75 67)); }',
-        '.wei8-pass-msg.good { color: rgb(var(--color-green, 80 200 120)); }',
-        '.wei8-pass-note { font-size: .8em; line-height: 1.5; opacity: .7; margin-top: .15em; }',
-    ].join('\n');
 
     function mkPassInput(placeholder) {
         var i = document.createElement('input');
@@ -340,28 +337,16 @@
         var label = document.createElement('span');
         label.textContent = '锁屏密码';
 
+        // v3.16：操作区容器 = 「更改密码」+「保存/取消」。.wrapper 是 space-between，
+        // 必须把这一坨包成一个直接子元素（连同左侧标签正好 2 个子元素）才贴两端；
+        // 否则三个按钮会被撑开、散在标签与右缘之间（v3.16 老板指的红框位置）。
+        var actions = document.createElement('div');
+        actions.className = 'wei8-pass-actions';
+
         var toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'param-btn';
         toggle.textContent = '更改密码';
-
-        wrapper.appendChild(label);
-        wrapper.appendChild(toggle);
-
-        var form = document.createElement('div');
-        form.id = 'wei8-pass-form';
-
-        var cur = mkPassInput('当前密码');
-        var next = mkPassInput('新密码（至少 4 位）');
-        var again = mkPassInput('再输一遍新密码');
-
-        var msg = document.createElement('div');
-        msg.className = 'wei8-pass-msg';
-
-        var note = document.createElement('div');
-        note.className = 'wei8-pass-note';
-        note.textContent =
-            '密码只保存在本机浏览器、不上云不同步。改过后请记牢：忘了将进不去设置（数据可用 Gist 备份恢复）。';
 
         var row = document.createElement('div');
         row.className = 'wei8-pass-row';
@@ -378,11 +363,31 @@
         row.appendChild(save);
         row.appendChild(cancel);
 
+        actions.appendChild(toggle);
+        actions.appendChild(row);
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(actions);
+
+        var form = document.createElement('div');
+        form.id = 'wei8-pass-form';
+
+        var cur = mkPassInput('当前密码');
+        var next = mkPassInput('新密码（至少 4 位）');
+        var again = mkPassInput('再输一遍新密码');
+
+        var msg = document.createElement('div');
+        msg.className = 'wei8-pass-msg';
+
+        var note = document.createElement('div');
+        note.className = 'wei8-pass-note';
+        note.textContent =
+            '密码只保存在本机浏览器、不上云不同步。改过后请记牢：忘了将进不去设置（数据可用 Gist 备份恢复）。';
+
         form.appendChild(cur);
         form.appendChild(next);
         form.appendChild(again);
         form.appendChild(msg);
-        form.appendChild(row);
         form.appendChild(note);
 
         param.appendChild(wrapper);
@@ -401,6 +406,8 @@
         toggle.addEventListener('click', function () {
             var open = !form.classList.contains('open');
             form.classList.toggle('open', open);
+            // v3.16：按钮跟表单同显同隐（空表单点「保存」只会弹「当前密码不对」）
+            row.classList.toggle('show', open);
             if (open) {
                 cur.focus();
             } else {
@@ -470,5 +477,24 @@
                 buildPassSection();
             }
         }).observe(aside, { childList: true, subtree: true });
+    }
+
+    /* 启动引导：必须放在文件最末。
+       buildPassSection() 用到下方才赋值的 PASS_CSS；var 会提升声明但不提升赋值，
+       放在中间时它会先于赋值执行，读到 undefined → 抛 TypeError、区块构建中断
+       （v3.16 实测踩中：#wei8-pass-section 挂不上、样式 len=0）。 */
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () {
+            buildPassSection();
+            watchPassSection();
+            build();
+        }, { once: true });
+    } else {
+        buildPassSection();
+        watchPassSection();
+        if (!build()) {
+            // 理论上 defer 脚本执行时 DOM 已解析完；万一没有，退到 DOMContentLoaded 再试一次
+            document.addEventListener('DOMContentLoaded', build, { once: true });
+        }
     }
 })();
