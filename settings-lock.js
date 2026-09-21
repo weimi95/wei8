@@ -24,6 +24,10 @@
  *   - 样式由本脚本自己注入 `<style>`，不新增 CSS 文件：安全相关的 UI 不该依赖
  *     "样式表有没有正确加载/缓存有没有破" 这类外部条件。
  *   - 解锁状态存 localStorage，默认 12 小时免输（UNLOCK_HOURS）。改这个数字即可调整。
+ *   - v3.12（老板需求）：密码可在设置面板里更改 —— 存 localStorage['wei8-lock-pass']，
+ *     未设置时回落到默认常量 PASS。改动入口 = 面板顶部「锁屏密码」区块，
+ *     **必须先输入当前密码**才能改（防身边人顺手改掉密码绕过锁）。
+ *     密码只存本机、不进 Gist 同步；忘掉后进不去设置，数据可从 Gist 备份恢复。
  *
  * 强度说明（务必对老板讲清）：这是**防身边人**的锁，不是安全边界。
  *   站点源码公开、密码明文写在下面，且清一下 localStorage 即可绕过。
@@ -40,11 +44,22 @@
         return;
     }
 
-    var PASS = '2026'; // ← 密码（明文；站点公开，见上方强度说明）
+    var PASS = '2026'; // ← 默认密码（明文；站点公开，见上方强度说明）
+    var PASS_KEY = 'wei8-lock-pass'; // 用户改过的密码存这里；没改过就用默认 PASS
     var UNLOCK_HOURS = 12; // ← 解锁后免输时长（小时）
     var KEY = 'wei8-settings-unlock';
 
     var ROOT = document.documentElement;
+
+    // 取当前生效密码：用户设置过的优先，否则默认
+    function getPass() {
+        try {
+            var v = localStorage.getItem(PASS_KEY);
+            return v !== null && v !== '' ? v : PASS;
+        } catch (e) {
+            return PASS;
+        }
+    }
 
     function readUntil() {
         try {
@@ -59,7 +74,13 @@
     window.__wei8Lock = mark;
 
     if (readUntil() > Date.now()) {
-        return; // 仍在免输窗口内，什么都不做
+        // 仍在免输窗口内：锁不生效，但「更改密码」入口照常提供（老板 v3.12 需求）
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', buildPassSection, { once: true });
+        } else {
+            buildPassSection();
+        }
+        return;
     }
 
     mark.locked = true;
@@ -127,7 +148,7 @@
         if (!input) return;
         mark.tries++;
         var v = (input.value || '').trim();
-        if (v === PASS) {
+        if (v === getPass()) {
             unlock();
             return;
         }
@@ -221,9 +242,197 @@
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', build, { once: true });
-    } else if (!build()) {
-        // 理论上 defer 脚本执行时 DOM 已解析完；万一没有，退到 DOMContentLoaded 再试一次
-        document.addEventListener('DOMContentLoaded', build, { once: true });
+        document.addEventListener('DOMContentLoaded', function () {
+            buildPassSection();
+            build();
+        }, { once: true });
+    } else {
+        buildPassSection();
+        if (!build()) {
+            // 理论上 defer 脚本执行时 DOM 已解析完；万一没有，退到 DOMContentLoaded 再试一次
+            document.addEventListener('DOMContentLoaded', build, { once: true });
+        }
+    }
+
+    // ==================== v3.12 设置面板「锁屏密码」区块 ====================
+    // 位置：面板顶部、General 区（#general_title）之前，独立小区块。
+    // 皮肤复用上游类（.settings-title / .param / .wrapper / .param-btn），
+    // 表单自身的样式由本脚本注入第二个 <style>（与锁屏同思路：安全相关 UI 不依赖外部 CSS）。
+    // ★ 中文标签绝不能挂上游的 i18n 类（那个钩子会改写/清空自建节点文本）。
+    // ★ 锁屏期间本区块被 #wei8-lock 遮罩盖住（absolute inset:0 z-index:999），点不到
+    //   —— 必须先过锁，再加上「保存」要验当前密码，双重防止身边人改密码。
+    var PASS_CSS = [
+        '#wei8-pass-form { display: none; flex-direction: column; gap: .5em; margin-top: .55em; }',
+        '#wei8-pass-form.open { display: flex; }',
+        '#wei8-pass-form input {',
+        '  font: inherit; font-size: .95em; padding: .5em .7em; border-radius: 10px; outline: none;',
+        '  border: 1px solid var(--color-border, #c8c7cc);',
+        '  background: var(--color-input, #eaeaee); color: var(--color-text, #222);',
+        '  letter-spacing: .18em;',
+        '}',
+        '#wei8-pass-form input::placeholder { letter-spacing: normal; opacity: .6; }',
+        '.wei8-pass-row { display: flex; gap: .6em; }',
+        '.wei8-pass-row button {',
+        '  font: inherit; font-size: .9em; padding: .45em 1.15em; border: 0; cursor: pointer;',
+        '  border-radius: 999px; background: rgb(var(--accent-color, 41 144 255) / .15);',
+        '  color: rgb(var(--accent-color, 41 144 255));',
+        '}',
+        '.wei8-pass-row button.ghost { background: none; color: var(--color-light-text, #5a5858); }',
+        '.wei8-pass-msg { min-height: 1.1em; font-size: .85em; }',
+        '.wei8-pass-msg.bad { color: rgb(var(--danger-color, 230 75 67)); }',
+        '.wei8-pass-msg.good { color: rgb(var(--color-green, 80 200 120)); }',
+        '.wei8-pass-note { font-size: .8em; line-height: 1.5; opacity: .7; margin-top: .15em; }',
+    ].join('\n');
+
+    function mkPassInput(placeholder) {
+        var i = document.createElement('input');
+        i.type = 'password';
+        i.autocomplete = 'off';
+        i.maxLength = 16;
+        i.placeholder = placeholder;
+        i.setAttribute('aria-label', placeholder);
+        return i;
+    }
+
+    function buildPassSection() {
+        var aside = document.getElementById('settings');
+        var anchor = document.getElementById('general_title');
+        if (!aside || !anchor) return false;
+        if (document.getElementById('wei8-pass-section')) return true; // 幂等
+
+        var style = document.createElement('style');
+        style.id = 'wei8-pass-style';
+        style.textContent = PASS_CSS;
+        (document.head || ROOT).appendChild(style);
+
+        var section = document.createElement('div');
+        section.id = 'wei8-pass-section';
+
+        var title = document.createElement('div');
+        title.className = 'settings-title';
+        var h2 = document.createElement('h2');
+        h2.textContent = '锁屏';
+        title.appendChild(h2);
+
+        var param = document.createElement('div');
+        param.className = 'param';
+
+        var wrapper = document.createElement('div');
+        wrapper.className = 'wrapper';
+
+        var label = document.createElement('span');
+        label.textContent = '锁屏密码';
+
+        var toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'param-btn';
+        toggle.textContent = '更改密码';
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(toggle);
+
+        var form = document.createElement('div');
+        form.id = 'wei8-pass-form';
+
+        var cur = mkPassInput('当前密码');
+        var next = mkPassInput('新密码（至少 4 位）');
+        var again = mkPassInput('再输一遍新密码');
+
+        var msg = document.createElement('div');
+        msg.className = 'wei8-pass-msg';
+
+        var note = document.createElement('div');
+        note.className = 'wei8-pass-note';
+        note.textContent =
+            '密码只保存在本机浏览器、不上云不同步。改过后请记牢：忘了将进不去设置（数据可用 Gist 备份恢复）。';
+
+        var row = document.createElement('div');
+        row.className = 'wei8-pass-row';
+
+        var save = document.createElement('button');
+        save.type = 'button';
+        save.textContent = '保存';
+
+        var cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'ghost';
+        cancel.textContent = '取消';
+
+        row.appendChild(save);
+        row.appendChild(cancel);
+
+        form.appendChild(cur);
+        form.appendChild(next);
+        form.appendChild(again);
+        form.appendChild(msg);
+        form.appendChild(row);
+        form.appendChild(note);
+
+        param.appendChild(wrapper);
+        param.appendChild(form);
+
+        section.appendChild(title);
+        section.appendChild(param);
+
+        function resetForm() {
+            form.classList.remove('open');
+            [cur, next, again].forEach(function (i) { i.value = ''; });
+            msg.textContent = '';
+            msg.className = 'wei8-pass-msg';
+        }
+
+        toggle.addEventListener('click', function () {
+            var open = !form.classList.contains('open');
+            form.classList.toggle('open', open);
+            if (open) {
+                cur.focus();
+            } else {
+                resetForm();
+            }
+        });
+
+        cancel.addEventListener('click', resetForm);
+
+        save.addEventListener('click', function () {
+            var c = (cur.value || '').trim();
+            var n = (next.value || '').trim();
+            var a = (again.value || '').trim();
+            msg.textContent = '';
+            msg.className = 'wei8-pass-msg';
+            if (c !== getPass()) {
+                msg.textContent = '当前密码不对';
+                msg.className = 'wei8-pass-msg bad';
+                cur.value = '';
+                cur.focus();
+                return;
+            }
+            if (n.length < 4) {
+                msg.textContent = '新密码至少 4 位';
+                msg.className = 'wei8-pass-msg bad';
+                next.focus();
+                return;
+            }
+            if (n !== a) {
+                msg.textContent = '两次新密码不一致';
+                msg.className = 'wei8-pass-msg bad';
+                again.focus();
+                return;
+            }
+            try {
+                localStorage.setItem(PASS_KEY, n);
+            } catch (e) {
+                msg.textContent = '保存失败（浏览器存储不可用）';
+                msg.className = 'wei8-pass-msg bad';
+                return;
+            }
+            window.__wei8Lock.passSet = true; // 可观测标记（探针断言用）
+            msg.textContent = '密码已更新，下次解锁生效';
+            msg.className = 'wei8-pass-msg good';
+            [cur, next, again].forEach(function (i) { i.value = ''; });
+            // 收起表单但保留成功提示几秒的做法太复杂；这里直接保留展开状态 + 成功文案
+        });
+
+        anchor.parentNode.insertBefore(section, anchor);
+        return true;
     }
 })();

@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.11</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.12</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,24 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.12</span><span class="date">2026-09-21</span>
+                    <ul class="changes">
+                        <li>
+                            设置面板顶部新增<strong>「锁屏密码」</strong>区块：点「更改密码」，
+                            输入<strong>当前密码</strong>验证通过后即可设置新密码
+                            （至少 4 位，需二次确认）。没改过时默认密码仍是 <code>2026</code>。
+                        </li>
+                        <li>
+                            密码只保存在<strong>本机浏览器</strong>、不上云不同步；
+                            改过后请记牢——忘了将进不去设置（数据可用 Gist 备份恢复）。
+                        </li>
+                        <li>
+                            改密码必须先过锁：锁屏期间该区块被遮罩盖住点不到，
+                            保存时还要再验一次当前密码，双重防止身边人顺手改掉密码绕过锁。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.11</span><span class="date">2026-09-21</span>
                     <ul class="changes">
                         <li>
