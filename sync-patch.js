@@ -23,6 +23,11 @@
  *        会在第一次还没写回 id 时就发动，两边都走 POST → 每次改动都多建一条 Gist。
  *      · id 优先读 localStorage，回落到内存里的 __wei8Sync.gistId，双保险。
  *      · token 无效时降级为手动（不自动推），并在状态区提示。
+ *   F. 进设置时检查服务器版本（v3.11，老板定稿）：
+ *      · 只在设置面板打开时检查一次，平时打开页面不碰服务器（本地缓存优先秒开）；
+ *      · 服务器与本机数据不一致 → 弹「覆盖本机 / 合并」二选一（绝不静默覆盖）：
+ *        覆盖 = 整包换成服务器那份；合并 = 只补不改（远端独有键并入，共有键保留本机）；
+ *      · 断网 → 静默跳过，「Server status」行显示「离线中，当前用本机缓存」。
  *
  * 注意：本层只清「明显是序列化残渣」的值，不动任何正常字符串；自动同步的推送
  * 走同源 https://api.github.com/gists，复用本地已登录态/令牌，不引入新凭据。
@@ -65,6 +70,9 @@
         lastServerAt: null, // 服务器 updated_at（本地时区字符串）
         lastTimeText: null, // 「同步」行右边当前显示的文字（探针读它）
         lastError: null,
+        pullCount: 0,       // 「合并/覆盖」写入本机的次数（探针读）
+        lastPullAt: 0,
+        lastPullStatus: null, // 'same'|'prompt'|'no-token'|'no-id'|'offline'|'error'
     };
 
     // A) 抢先清理 —— 上游的「得到 / 发送」是 clickdown 库挂在**按钮自身**上的
@@ -553,15 +561,169 @@
         tick();
     }
 
+    // ============ 进设置时检查服务器版本 + 「覆盖 / 合并」二选一 ============
+    // （2026-09-21 老板定稿：本地缓存优先秒开；不用每次打开页面都拉；进设置时检查一次；
+    //   服务器与本机不一致就弹提示让老板二选一，**绝不静默覆盖**。）
+    //
+    //   覆盖本机 = 整包换成服务器那份（服务器为准，本机独有改动丢弃；覆盖后抑制空推送）
+    //   合并     = 只补不改：服务器有、本机没有的顶层键补进来；两边都有的键保留本机
+    //              （合并后本机是「两边并集」，自动同步会把并集推回服务器）
+    //   断网     = 静默跳过，「Server status」行显示「离线中，当前用本机缓存」，本机缓存照常用
+    //
+    //   ★ 为什么「合并/覆盖」都安全：只在**顶层键**层面操作，绝不把远端缺键的本机数据删掉，
+    //     也不会触发上游 verifyDataAsSync 浅合并把嵌套块（move 布局/weather/…）重置成默认。
+    var lastPullStatus = null; // 'same' | 'prompt' | 'no-token' | 'no-id' | 'offline' | 'error'
+
+    // 断网/离线状态提示：挂在「Server status」行基节点；在线时由 renderServerStatus 刷新时间戳
+    function renderOfflineStatus() {
+        var base = document.getElementById('gist-sync-status-base');
+        if (!base) return;
+        if (lastPullStatus === 'offline') {
+            base.textContent = '离线中，当前用本机缓存';
+        }
+        // 缺令牌/无 Gist 时 renderServerStatus 已写「等待认证」「尚无保存的数据」，这里不覆盖
+    }
+
+    function removeSyncPrompt() {
+        var old = document.getElementById('wei8-sync-prompt');
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+    }
+
+    // 弹「覆盖 / 合并」二选一。位置：同步区块内、提示文案（#wei8-sync-hint）下面。
+    function showSyncPrompt(remote, serverTs) {
+        var actions = document.getElementById('gist-sync-actions');
+        if (!actions || !actions.parentNode) return;
+        removeSyncPrompt();
+        var wrap = actions.parentNode; // .wrapper
+        var hint = document.getElementById('wei8-sync-hint');
+
+        var bar = document.createElement('div');
+        bar.id = 'wei8-sync-prompt';
+        bar.style.fontSize = '0.85em';
+        bar.style.lineHeight = '1.6';
+        bar.style.padding = '0.45em 0.6em';
+        bar.style.marginTop = '0.4em';
+        bar.style.border = '1px solid rgba(128,128,128,.35)';
+        bar.style.borderRadius = '6px';
+
+        var tip = document.createElement('div');
+        tip.textContent = '检测到服务器版本与本机不一致（服务器时间：' + serverTs + '）';
+        bar.appendChild(tip);
+
+        var row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '0.8em';
+        row.style.marginTop = '0.3em';
+
+        // 写本机 + 刷新。suppressPush：覆盖后内容与服务器相同，置 lastAutoKey 抑制自动同步空推一遍。
+        function applyLocal(next, suppressPush) {
+            try {
+                localStorage.setItem('bonjourr', JSON.stringify(next));
+                if (suppressPush) state.lastAutoKey = stableHash(next);
+                window.__wei8Sync.pullCount = (window.__wei8Sync.pullCount || 0) + 1;
+                window.__wei8Sync.lastPullAt = Date.now();
+                window.__wei8Sync.lastError = null;
+                globalThis.dispatchEvent(new Event('storage')); // 驱动上游组件按新数据刷新
+            } catch (e) {
+                window.__wei8Sync.lastError = '写入本机失败：' + (e && e.message ? e.message : String(e));
+            }
+            removeSyncPrompt();
+            renderServerStatus(readLocal('gistToken'), cleanId(readLocal('gistId')));
+        }
+
+        function mkBtn(label, fn) {
+            var b = document.createElement('button');
+            b.type = 'button'; // 动态 button 必须显式 type="button"，否则点击会提交所在表单
+            b.textContent = label;
+            b.style.cursor = 'pointer';
+            b.addEventListener('click', fn);
+            return b;
+        }
+
+        row.appendChild(mkBtn('覆盖本机', function () {
+            applyLocal(remote, true); // 服务器为准，整包替换
+        }));
+        row.appendChild(mkBtn('合并', function () {
+            var localData = readSyncData() || {};
+            var merged = {};
+            Object.keys(localData).forEach(function (k) { merged[k] = localData[k]; }); // 本机全保留
+            Object.keys(remote).forEach(function (k) {
+                if (!(k in localData)) merged[k] = remote[k]; // 只补：远端独有键进本机；共有键不动
+            });
+            applyLocal(merged, false); // 并集随自动同步推回服务器
+        }));
+        bar.appendChild(row);
+
+        (hint || wrap).parentNode.insertBefore(bar, (hint || wrap).nextSibling);
+    }
+
+    // 检查服务器版本（只在进设置时被调用）：一致→安静退场；不一致→弹二选一；断网→离线提示
+    function autoPull() {
+        var token = readLocal('gistToken');
+        var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
+        if (!token || !id) {
+            lastPullStatus = !token ? 'no-token' : 'no-id';
+            window.__wei8Sync.lastPullStatus = lastPullStatus;
+            return;
+        }
+        // ★ cache:'reload' 必须带：GitHub API 的 GET 响应带 Cache-Control: max-age=60，
+        //   浏览器 HTTP 缓存会让这里拿到 1 分钟前的旧内容——「覆盖本机」就可能用旧数据盖新数据
+        //   （probe_sync.js 7.8 实测踩中：外部 PATCH 后 60s 内进设置，GET 还是补丁前的缓存）。
+        fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token), cache: 'reload' })
+            .then(function (resp) {
+                if (resp.status !== 200) { lastPullStatus = 'error'; return null; }
+                return resp.json();
+            })
+            .then(function (json) {
+                if (!json) { window.__wei8Sync.lastPullStatus = lastPullStatus; return; }
+                var content = Object.values(json.files || {})[0];
+                if (!content || typeof content.content !== 'string') { lastPullStatus = 'error'; return; }
+                var remote;
+                try { remote = JSON.parse(content.content); } catch (e) { lastPullStatus = 'error'; return; }
+                if (!remote || typeof remote !== 'object') { lastPullStatus = 'error'; return; }
+                var localData = readSyncData() || {};
+                // 逐键比对（本机没有的键 = 服务器多了；值不同 = 内容不一致）
+                var same = true;
+                var rk = Object.keys(remote);
+                for (var i = 0; i < rk.length; i++) {
+                    if (!(rk[i] in localData) ||
+                        stableHash(remote[rk[i]]) !== stableHash(localData[rk[i]])) { same = false; break; }
+                }
+                var serverTs = json.updated_at ? (fmtTs(parseTs(json.updated_at)) || '') : '';
+                if (same) {
+                    lastPullStatus = 'same'; // 一致：不打扰
+                } else {
+                    lastPullStatus = 'prompt';
+                    showSyncPrompt(remote, serverTs);
+                }
+                window.__wei8Sync.lastPullStatus = lastPullStatus;
+            })
+            .catch(function () {
+                lastPullStatus = 'offline';
+                window.__wei8Sync.lastPullStatus = 'offline';
+                renderOfflineStatus(); // 断网无副作用，本机缓存照常用
+            });
+    }
+
+    // 只在「设置面板打开」时检查（老板：不用每次打开页面都拉一次）。
+    // 上游打开面板 = aside#settings 加 shown 类，MutationObserver 盯 class 变化即可，不改上游。
+    function watchSettingsOpen() {
+        var aside = document.getElementById('settings');
+        if (!aside || typeof MutationObserver === 'undefined') return;
+        new MutationObserver(function () {
+            if (aside.classList.contains('shown')) autoPull();
+        }).observe(aside, { attributes: true, attributeFilter: ['class'] });
+    }
+
     // 事件接入：上游在 sync.set 里 `globalThis.dispatchEvent(new Event('storage'))`
     window.addEventListener('storage', onStorage);
     // 上游是 `globalThis.dispatchEvent(new Event('storage'))` —— 即 window 上的原生 storage 事件
     // （localstorage 模式下它不走跨标签页，但事件名仍是 'storage'，直接挂在 window 上即可捕获）
 
-    // 首次进入设置面板时，把服务器时间戳刷新一遍
     document.addEventListener('DOMContentLoaded', function () {
-        // 面板每次打开（上游在 toggleSyncSettingsOption 里调用 setGistStatus），
-        // 这里在 1s 后补一次刷新，覆盖「面板刚打开、DOM 还没渲染出 status 容器」的时序
+        // 时间戳轮询照旧（进设置 1s 后补刷一轮，覆盖面板 DOM 刚就位的时序）
         setTimeout(function () { startPoll(); }, 1000);
+        // 版本检查只在面板真正打开时触发（不用每次打开页面都拉一次——老板定稿）
+        watchSettingsOpen();
     });
 })();

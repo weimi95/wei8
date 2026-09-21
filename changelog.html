@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.10</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.11</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,31 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.11</span><span class="date">2026-09-21</span>
+                    <ul class="changes">
+                        <li>
+                            <strong>秒开</strong>：页面资源改为「本地缓存优先 + 后台刷新」——
+                            有缓存立刻打开、不等网络，弱网和断网都秒开；后台静默拉新版，
+                            下次打开即是最新（每次部署后首个打开可能是旧版，最多落后一版）。
+                        </li>
+                        <li>
+                            <strong>数据以本地缓存优先</strong>：平时打开页面不再请求服务器；
+                            只在<strong>打开设置面板时</strong>检查一次服务器版本。
+                        </li>
+                        <li>
+                            服务器数据与本机不一致时，弹出
+                            <strong>「覆盖本机 / 合并」二选一</strong>，不再静默覆盖：
+                            覆盖 = 以服务器为准整包替换；合并 = 只补不改
+                            （服务器有、本机没有的书签并入，两边都有的保留本机，
+                            合并结果自动推回服务器）。
+                        </li>
+                        <li>
+                            断网时「Server status」行显示「离线中，当前用本机缓存」，
+                            本机缓存照常可用。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.10</span><span class="date">2026-09-21</span>
                     <ul class="changes">
                         <li>
