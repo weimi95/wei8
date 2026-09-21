@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.13</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.14</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,36 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.14</span><span class="date">2026-09-21</span>
+                    <ul class="changes">
+                        <li>
+                            <strong>同步历史自己记</strong>：「同步」右边的版本下拉改由本站维护
+                            （随推送写进云端备份、上限 <strong>30 条</strong>），不再依赖 GitHub 自带的
+                            版本履历——它会被高频同步清空，之前下拉因此一度全空。
+                        </li>
+                        <li>
+                            历史分<strong>「自动 / 手动」</strong>两种标记：改动后自动推送记「自动」；
+                            点「上传备份」手动备份记「手动」，一眼看出哪次是手动留的还原点。
+                        </li>
+                        <li>
+                            <strong>打开页面自动兜底</strong>：本机设置数据丢失时自动从云端备份恢复；
+                            云端与本机不一致时右下角弹小条提示，点一下直达设置处理——
+                            本地缓存优先秒开的原则不变，一致时完全不打扰。
+                        </li>
+                        <li>
+                            <strong>按钮改名</strong>：「得到」→「下载还原」、「发送」→「上传备份」。
+                        </li>
+                        <li>
+                            「锁屏密码」区块挪进<strong>「设置管理」</strong>栏内，跟同步等管理功能放一栏；
+                            并加了自动补挂，不会再出现时有时无的情况。
+                        </li>
+                        <li>
+                            补充说明：设置面板解锁后有 <strong>12 小时免输</strong>窗口，
+                            期间打开设置不再要密码——这是设计如此，不是锁失效。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.13</span><span class="date">2026-09-21</span>
                     <ul class="changes">
                         <li>

@@ -28,6 +28,21 @@
  *      · 服务器与本机数据不一致 → 弹「覆盖本机 / 合并」二选一（绝不静默覆盖）：
  *        覆盖 = 整包换成服务器那份；合并 = 只补不改（远端独有键并入，共有键保留本机）；
  *      · 断网 → 静默跳过，「Server status」行显示「离线中，当前用本机缓存」。
+ *   G. 同步历史自维护（v3.15，老板定稿：上限 30 条）：
+ *      · 背景：GitHub 会把高频 PATCH 的 Gist history 清空/截断（实测 50 连推后只剩
+ *        上限 30 条、真机 2 个 Gist history=0），下拉一度全空 —— 不能再依赖它。
+ *      · 方案：历史由本层自己记，随推送写进 Gist 数据本体顶层键 `wei8SyncHistory`
+ *        （[{t:ISO时间, m:'auto'|'manual'}]，HIST_MAX=30 条、新→旧；Gist 单文件上限
+ *        极宽松，30 条约 2KB 无压力）；本机另存镜像 localStorage['wei8-sync-history']。
+ *        下拉 = 远端 ∪ 本地镜像，按时间倒序去重。
+ *      · 分类（老板要求）：自动推送记 m:'auto'（显示「自动」）；手动点「发送」记
+ *        m:'manual'（显示「手动」= 手动备份）。手动记录 8s 后随一次补推上云
+ *        （上游 sendGist 先推数据本体，我们后补历史，串行不冲突）。
+ *   H. 装载期云端兜底（v3.15）：打开页面后台查一次（cache:'reload'，不阻塞秒开）：
+ *      · 本机数据无效（bonjourr 缺失/非法/无 linkgroups）→ 直接从云端拉回 + 提示；
+ *      · 本机有效但与云端不一致 → 右下角小条提示「点此进设置处理」（不自动动本机）；
+ *      · 一致/断网 → 完全安静。进设置时的检查（F）照旧。
+ *      比对/合并一律把 `wei8SyncHistory` 排除在外 —— 它是本层的记录，不是设置数据。
  *
  * 注意：本层只清「明显是序列化残渣」的值，不动任何正常字符串；自动同步的推送
  * 走同源 https://api.github.com/gists，复用本地已登录态/令牌，不引入新凭据。
@@ -80,17 +95,6 @@
     function isSyncBtn(el) {
         return !!(el && el.closest && el.closest('#b_gistup, #b_gistdown, #b_gistsync'));
     }
-
-    function preGuard(e) {
-        if (!isSyncBtn(e.target)) {
-            return;
-        }
-        window.__wei8Sync.hits++;
-        cleanDirty();
-    }
-
-    document.addEventListener('pointerdown', preGuard, true);
-    document.addEventListener('keydown', preGuard, true);
 
     // B) 同步区块的中文提示（用自己的类名；绝不能用上游的 .trn，那会被翻译器改写/清空）
     function addHint() {
@@ -157,6 +161,81 @@
         queued: false,  // 在飞期间又来了改动，落地后补推
         polling: false,
     };
+
+    // ==================== G) 同步历史自维护（v3.15） ====================
+    // 历史条目：{t: ISO字符串, m: 'auto'|'manual'}，新→旧，上限 HIST_MAX 条。
+    // 真源 = Gist 数据本体顶层键 `wei8SyncHistory`（跨设备随数据走）；
+    // 本机镜像 = localStorage['wei8-sync-history']（推送落地前先能看到、也供合并）。
+    var HIST_MAX = 30; // 老板定稿：上限 30 条（Gist 单文件上限极宽松，30 条约 2KB）
+    var HIST_KEY = 'wei8-sync-history';
+    var HIST_FIELD = 'wei8SyncHistory'; // 数据本体里的顶层键名（比对/合并时必须排除）
+
+    function readMirror() {
+        try {
+            var arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function writeMirror(hist) {
+        try { localStorage.setItem(HIST_KEY, JSON.stringify(hist)); } catch (e) { /* ignore */ }
+    }
+
+    // 从数据本体提取历史（bonjourr 键里可能带着「下载还原」时进来的那份）
+    function histFromData(data) {
+        if (!data || !Array.isArray(data[HIST_FIELD])) return [];
+        return data[HIST_FIELD];
+    }
+
+    // 合并去重：extra(远端历史) ∪ 数据本体 ∪ 本地镜像，按 t 倒序，最多 HIST_MAX 条
+    function mergeHist(extra) {
+        var seen = {};
+        var out = [];
+        var pool = (Array.isArray(extra) ? extra : [])
+            .concat(histFromData(readSyncData()))
+            .concat(readMirror());
+        pool.sort(function (a, b) { return a && b && a.t < b.t ? 1 : -1; });
+        for (var i = 0; i < pool.length && out.length < HIST_MAX; i++) {
+            var it = pool[i];
+            if (!it || !it.t || seen[it.t]) continue;
+            seen[it.t] = 1;
+            out.push({ t: it.t, m: it.m === 'manual' ? 'manual' : 'auto' });
+        }
+        return out;
+    }
+
+    // 记一条历史并落镜像（不碰数据本体，避免触发 storage 事件再推一轮）
+    function recordHist(mode) {
+        var hist = mergeHist();
+        hist.unshift({ t: new Date().toISOString(), m: mode });
+        hist = hist.slice(0, HIST_MAX);
+        writeMirror(hist);
+        return hist;
+    }
+
+    // 「下载/上传」是否被点到（preGuard 用；手动「上传备份」要记 manual 条目）
+    function preGuard(e) {
+        if (!isSyncBtn(e.target)) {
+            return;
+        }
+        window.__wei8Sync.hits++;
+        cleanDirty();
+        // 手动备份：点「发送」（b_gistup）→ 记 manual；8s 后补推一次把记录带上云。
+        // （上游 sendGist 先推数据本体；我们这刀只补 wei8SyncHistory，串行不冲突。
+        //   若 8s 内自动推送已在飞/已排队，queued 机制会自然带上最新历史，无须再排。）
+        if (e.target.closest && e.target.closest('#b_gistup')) {
+            recordHist('manual');
+            window.__wei8Sync.manualRecords = (window.__wei8Sync.manualRecords || 0) + 1;
+            if (!state.pushTimer) {
+                setTimeout(function () { autoPush(); }, 8000);
+            }
+        }
+    }
+
+    document.addEventListener('pointerdown', preGuard, true);
+    document.addEventListener('keydown', preGuard, true);
 
     // 读一个键（容错）
     function readLocal(key) {
@@ -298,6 +377,8 @@
         list.style.fontSize = '0.85em';
         list.style.minWidth = '14em';
         list.style.whiteSpace = 'nowrap';
+        list.style.maxHeight = '16em';
+        list.style.overflowY = 'auto';
         for (var i = 0; i < items.length; i++) {
             var row = document.createElement('div');
             row.style.padding = '1px 0';
@@ -366,16 +447,24 @@
                     var localStr = fmtTs(new Date(json.updated_at));
                     window.__wei8Sync.lastServerAt = localStr;
 
-                    // ① 「同步」行后面的最后更新时间（老板要的位置）+ 最近 5 条下拉
-                    //    历史直接来自 Gist 响应的 history 字段（每次成功推送记一条，
-                    //    committed_at 精确到秒、已按新→旧排好、默认返回 5 条）。
-                    //    随 GET Gist 一起拿，不另开请求、不轮询——进设置刷新到即渲染。
+                    // ① 「同步」行后面的最后更新时间（老板要的位置）+ 最近历史下拉。
+                    //    ★ v3.15 起历史来自本层自维护的 wei8SyncHistory（Gist content 顶层键
+                    //    ∪ 本机镜像），不再用 Gist 响应的 history 字段 —— GitHub 会把高频
+                    //    PATCH 的 history 清空/截断（v3.14 实测真机两个 Gist history=0）。
                     var items = [];
-                    var hist = Array.isArray(json.history) ? json.history : [];
-                    for (var k = 0; k < hist.length && items.length < 5; k++) {
-                        var d = parseTs(hist[k].committed_at);
+                    var remoteHist = [];
+                    try {
+                        var gistData = JSON.parse(
+                            (Object.values(json.files || {})[0] || {}).content || '{}'
+                        );
+                        remoteHist = histFromData(gistData);
+                    } catch (e) { /* content 解析失败就只用本机镜像 */ }
+                    var merged = mergeHist(remoteHist);
+                    for (var k = 0; k < merged.length && items.length < HIST_MAX; k++) {
+                        var it = merged[k];
+                        var d = parseTs(it.t);
                         if (!d) continue;
-                        items.push({ ts: fmtTs(d), note: '#' + (hist.length - k) });
+                        items.push({ ts: fmtTs(d), note: it.m === 'manual' ? '手动' : '自动' });
                     }
                     setTimeText(localStr, items);
 
@@ -439,6 +528,12 @@
         var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
         var data = readSyncData();
         if (!token || !data) return;
+        // ★ 护栏（v3.15）：本地无有效数据绝不推 —— 否则空壳/默认数据会顶掉云端好数据。
+        //   linkgroups 是 preset 预置与真实数据共有的锚键；它缺失 = 本机数据不可信。
+        if (!data.linkgroups) {
+            window.__wei8Sync.lastError = '本机无有效设置数据，已跳过推送（避免覆盖云端备份）';
+            return;
+        }
         state.pushing = true;
 
         function done() {
@@ -451,7 +546,13 @@
 
         // 上游的「默认数据不许发」护栏（对应 isStorageDefault）
         // 这里简单判：同步数据等于默认（无用户改动）则不推。
-        var files = { 'bonjourr-export.json': { content: JSON.stringify(data, undefined, 2) } };
+        // ★ v3.15：推送内容 = 数据本体 + wei8SyncHistory（本次推送先记 auto 条目再上云）。
+        //   历史只进 Gist content，不写回本地 bonjourr（否则触发 storage 事件再推一轮）；
+        //   本机可见性由镜像 localStorage['wei8-sync-history'] 承担。
+        var payload = {};
+        Object.keys(data).forEach(function (k) { payload[k] = data[k]; });
+        payload[HIST_FIELD] = recordHist('auto');
+        var files = { 'bonjourr-export.json': { content: JSON.stringify(payload, undefined, 2) } };
         var description =
             'File automatically generated by Bonjourr. Learn more on https://bonjourr.fr/docs/settings-management/syncing/#github-gist';
 
@@ -648,6 +749,7 @@
             var merged = {};
             Object.keys(localData).forEach(function (k) { merged[k] = localData[k]; }); // 本机全保留
             Object.keys(remote).forEach(function (k) {
+                if (k === HIST_FIELD) return; // 同步记录不进设置数据（v3.15）
                 if (!(k in localData)) merged[k] = remote[k]; // 只补：远端独有键进本机；共有键不动
             });
             applyLocal(merged, false); // 并集随自动同步推回服务器
@@ -683,9 +785,11 @@
                 if (!remote || typeof remote !== 'object') { lastPullStatus = 'error'; return; }
                 var localData = readSyncData() || {};
                 // 逐键比对（本机没有的键 = 服务器多了；值不同 = 内容不一致）
+                // ★ wei8SyncHistory 是本层的同步记录，不是设置数据，比对时排除（v3.15）
                 var same = true;
                 var rk = Object.keys(remote);
                 for (var i = 0; i < rk.length; i++) {
+                    if (rk[i] === HIST_FIELD) continue;
                     if (!(rk[i] in localData) ||
                         stableHash(remote[rk[i]]) !== stableHash(localData[rk[i]])) { same = false; break; }
                 }
@@ -720,10 +824,100 @@
     // 上游是 `globalThis.dispatchEvent(new Event('storage'))` —— 即 window 上的原生 storage 事件
     // （localstorage 模式下它不走跨标签页，但事件名仍是 'storage'，直接挂在 window 上即可捕获）
 
+    // ============ 装载期云端兜底（v3.15，H 段） ============
+    // 打开页面后台查一次（不阻塞秒开：GET 是异步的，UI 照常从本机缓存渲染）：
+    //   ① 本机数据无效（bonjourr 缺失/非法/无 linkgroups）→ 直接从云端拉回写本机，
+    //     省掉「本地丢了还得手动点得到」的坑（老板实测踩中）；
+    //   ② 本机有效但不一致 → 右下角小条提示（不自动动本机数据，v3.11 原则不变）；
+    //   ③ 一致 / 断网 / 没配 token → 完全安静。
+    // 比对与 F 段 autoPull 同规则：排除 wei8SyncHistory。
+    function toast(msg, onclick) {
+        var old = document.getElementById('wei8-sync-toast');
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+        var t = document.createElement('div');
+        t.id = 'wei8-sync-toast';
+        t.textContent = msg;
+        t.style.cssText =
+            'position:fixed;right:1em;bottom:1em;z-index:950;max-width:20em;cursor:pointer;' +
+            'font:inherit;font-size:.85em;line-height:1.5;padding:.7em .9em;border-radius:8px;' +
+            'background:var(--color-settings,#f2f2f7);color:var(--color-text,#222);' +
+            'border:1px solid rgba(128,128,128,.4);box-shadow:0 2px 10px rgba(0,0,0,.25);';
+        t.addEventListener('click', function () {
+            if (t.parentNode) t.parentNode.removeChild(t);
+            if (onclick) onclick();
+        });
+        document.body.appendChild(t);
+        // 30s 后自动消失（不抢戏；点击可提前关闭）
+        setTimeout(function () {
+            if (t.parentNode) t.parentNode.removeChild(t);
+        }, 30000);
+    }
+
+    function diffRemote(remote, localData) {
+        var rk = Object.keys(remote);
+        for (var i = 0; i < rk.length; i++) {
+            if (rk[i] === HIST_FIELD) continue;
+            if (!(rk[i] in localData) ||
+                stableHash(remote[rk[i]]) !== stableHash(localData[rk[i]])) return true;
+        }
+        return false;
+    }
+
+    function bootCheck() {
+        var token = readLocal('gistToken');
+        var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
+        if (!token || !id) return;
+        fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token), cache: 'reload' })
+            .then(function (resp) {
+                if (resp.status !== 200) return null;
+                return resp.json();
+            })
+            .then(function (json) {
+                if (!json) return;
+                var content = Object.values(json.files || {})[0];
+                if (!content || typeof content.content !== 'string') return;
+                var remote;
+                try { remote = JSON.parse(content.content); } catch (e) { return; }
+                if (!remote || typeof remote !== 'object') return;
+
+                // 远端历史落镜像：别的设备推的历史，本机也能立刻在下拉里看到
+                if (Array.isArray(remote[HIST_FIELD])) {
+                    writeMirror(mergeHist(remote[HIST_FIELD]));
+                }
+
+                var localData = readSyncData();
+                var localValid = !!(localData && localData.linkgroups);
+                if (!localValid) {
+                    // ① 本机无效：直接恢复（写整包 + 驱动上游刷新；恢复动作本身
+                    //   会触发一轮自动推送，把「恢复」也记进历史，两台设备不再互相弹）
+                    try {
+                        localStorage.setItem('bonjourr', JSON.stringify(remote));
+                        globalThis.dispatchEvent(new Event('storage'));
+                    } catch (e) { return; }
+                    window.__wei8Sync.bootRestore = true;
+                    toast('本机没有设置数据，已从云端备份恢复。', function () {
+                        document.dispatchEvent(new CustomEvent('toggle-settings'));
+                    });
+                    return;
+                }
+                if (diffRemote(remote, localData)) {
+                    // ② 不一致：只提示，不动本机（覆盖/合并仍走设置面板里的二选一）
+                    toast('云端备份与本机设置不一致，点此进设置处理。', function () {
+                        document.dispatchEvent(new CustomEvent('toggle-settings'));
+                    });
+                }
+            })
+            .catch(function () {
+                /* 断网/网络异常：完全安静，本机缓存照用 */
+            });
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         // 时间戳轮询照旧（进设置 1s 后补刷一轮，覆盖面板 DOM 刚就位的时序）
         setTimeout(function () { startPoll(); }, 1000);
         // 版本检查只在面板真正打开时触发（不用每次打开页面都拉一次——老板定稿）
         watchSettingsOpen();
+        // 装载期兜底：打开页面后台查一次（延迟 3s，错开首屏渲染与 SW 安装）
+        setTimeout(bootCheck, 3000);
     });
 })();

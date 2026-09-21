@@ -73,13 +73,22 @@
     var mark = { locked: false, tries: 0, until: 0 };
     window.__wei8Lock = mark;
 
-    if (readUntil() > Date.now()) {
-        // 仍在免输窗口内：锁不生效，但「更改密码」入口照常提供（老板 v3.12 需求）
+    // 启动公共段（v3.15）：密码区块挂载 + 幂等重挂，锁不锁屏都要跑
+    function bootPass() {
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', buildPassSection, { once: true });
+            document.addEventListener('DOMContentLoaded', function () {
+                buildPassSection();
+                watchPassSection();
+            }, { once: true });
         } else {
             buildPassSection();
+            watchPassSection();
         }
+    }
+
+    if (readUntil() > Date.now()) {
+        // 仍在免输窗口内：锁不生效，但「更改密码」入口照常提供（老板 v3.12 需求）
+        bootPass();
         return;
     }
 
@@ -244,10 +253,12 @@
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function () {
             buildPassSection();
+            watchPassSection();
             build();
         }, { once: true });
     } else {
         buildPassSection();
+        watchPassSection();
         if (!build()) {
             // 理论上 defer 脚本执行时 DOM 已解析完；万一没有，退到 DOMContentLoaded 再试一次
             document.addEventListener('DOMContentLoaded', build, { once: true });
@@ -255,12 +266,16 @@
     }
 
     // ==================== v3.12 设置面板「锁屏密码」区块 ====================
-    // 位置：面板顶部、General 区（#general_title）之前，独立小区块。
+    // 位置（v3.15 起老板定稿）：「设置管理」区块（#settings-management_title）的**区块内
+    // 顶部** —— 跟同步/导入导出等管理功能放一栏，不再单独占一栏。找不到该锚点时回落
+    // 到 v3.12 的旧位置（#general_title 之前），防上游改版后区块凭空消失。
     // 皮肤复用上游类（.settings-title / .param / .wrapper / .param-btn），
     // 表单自身的样式由本脚本注入第二个 <style>（与锁屏同思路：安全相关 UI 不依赖外部 CSS）。
     // ★ 中文标签绝不能挂上游的 i18n 类（那个钩子会改写/清空自建节点文本）。
     // ★ 锁屏期间本区块被 #wei8-lock 遮罩盖住（absolute inset:0 z-index:999），点不到
     //   —— 必须先过锁，再加上「保存」要验当前密码，双重防止身边人改密码。
+    // ★ v3.15 幂等重挂：上游某些路径（如语言切换重渲染）理论上可能动到面板 DOM，
+    //   MutationObserver 盯着 aside，区块一旦不在就立刻补回（buildPassSection 幂等）。
     var PASS_CSS = [
         '#wei8-pass-form { display: none; flex-direction: column; gap: .5em; margin-top: .55em; }',
         '#wei8-pass-form.open { display: flex; }',
@@ -296,7 +311,9 @@
 
     function buildPassSection() {
         var aside = document.getElementById('settings');
-        var anchor = document.getElementById('general_title');
+        // v3.15：首选「设置管理」栏内顶部；找不到再回落旧的通用栏锚点
+        var anchor = document.getElementById('settings-management_title') ||
+            document.getElementById('general_title');
         if (!aside || !anchor) return false;
         if (document.getElementById('wei8-pass-section')) return true; // 幂等
 
@@ -432,7 +449,26 @@
             // 收起表单但保留成功提示几秒的做法太复杂；这里直接保留展开状态 + 成功文案
         });
 
-        anchor.parentNode.insertBefore(section, anchor);
+        // v3.15：「设置管理」栏内顶部 = 标题元素的下一个兄弟位；旧锚点（general_title）
+        // 则是插在它**前面**（v3.12 行为不变）。
+        if (anchor.id === 'settings-management_title') {
+            anchor.parentNode.insertBefore(section, anchor.nextSibling);
+        } else {
+            anchor.parentNode.insertBefore(section, anchor);
+        }
         return true;
+    }
+
+    // v3.15 幂等重挂：区块一旦从面板里消失（任何上游 DOM 变动），立刻补回。
+    // observer 回调里插入 section 会再触发一次回调 → buildPassSection 幂等守卫直接
+    // return true，不会死循环。
+    function watchPassSection() {
+        var aside = document.getElementById('settings');
+        if (!aside || typeof MutationObserver === 'undefined') return;
+        new MutationObserver(function () {
+            if (!document.getElementById('wei8-pass-section')) {
+                buildPassSection();
+            }
+        }).observe(aside, { childList: true, subtree: true });
     }
 })();
