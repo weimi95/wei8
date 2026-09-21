@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.8</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.9</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,23 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.9</span><span class="date">2026-09-21</span>
+                    <ul class="changes">
+                        <li>
+                            「同步」这一行的时间戳<strong>改成可点开</strong>：点一下展开一个
+                            <strong>最近 5 条</strong>下拉，列出服务器上最近 5 次推送的时间，最新在顶。
+                        </li>
+                        <li>
+                            时间戳格式按老板指定的样式改成 <code>2026/0921/09.38.45</code>
+                            （年 / 月日 / 时.分.秒，时点分点秒，全数字、点号分隔时间段）。
+                        </li>
+                        <li>
+                            下拉历史直接取自 Gist 响应自带的 <code>history</code> 字段
+                            （每次成功推送记一条，精确到秒），<strong>随查看一起返回、不额外请求、不轮询</strong>。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.8</span><span class="date">2026-09-21</span>
                     <ul class="changes">
                         <li>

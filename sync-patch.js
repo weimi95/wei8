@@ -201,17 +201,30 @@
         };
     }
 
-    // 时间戳格式：2026/0920/193205（年/月日/时分秒）
-    // 全数字、无空格、按字典序即按时间序 —— 适合肉眼比对哪份新。
+    // 渲染「同步」行时间戳 + 最近 5 条历史下拉
+    // items：[{ts:'2026/0921/20.27.19', note:'#12'}] 按新→旧；首条即「当前版本」。
+    function renderTimeWithHistory(localStr, items) {
+        var txt = items.length > 0 ? localStr : '尚未同步';
+        setTimeText(txt, items);
+    }
+    // 时间戳格式：2026/0921/09.38.45（老板指定：年/月日/时.分.秒，时点分点秒）
+    // 全数字 + 点号分隔时间段，肉眼可排序、可比对。
     function fmtTs(d) {
         var p = function (n) { return (n < 10 ? '0' : '') + n; };
         return (
             d.getFullYear() + '/' + p(d.getMonth() + 1) + p(d.getDate()) +
-            '/' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds())
+            '/' + p(d.getHours()) + '.' + p(d.getMinutes()) + '.' + p(d.getSeconds())
         );
     }
 
-    // 「同步」行标签右边的时间戳节点。
+    // ISO 时间戳（UTC）→ 本地时区
+    function parseTs(s) {
+        if (!s) return null;
+        var d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    // 「同步」行标签右边的时间戳节点（做成**可点开的下拉**，列最近 5 条版本）。
     // 位置依据（settings.html:2066-2084）：
     //   <div class="wrapper">            <- flex + space-between + align-items:center
     //     <span class="trn">Synchronize</span>
@@ -228,14 +241,79 @@
         el.style.opacity = '0.7';
         el.style.marginLeft = '0.6em';
         el.style.marginRight = 'auto';
+        el.style.position = 'relative';
+        el.style.cursor = 'pointer';
         actions.parentNode.insertBefore(el, actions);
         return el;
     }
 
-    function setTimeText(txt) {
+    // 写「时间戳文本 + 最近 5 条历史列表」。
+    // txt = 当前主时间戳；items = [{ts: '2026/0921/09.38.45', note: '#1'}] 按新→旧，最多 5 条。
+    // ★ 主时间戳放在 <span id="wei8-sync-time-label">，列表是它的**兄弟**节点（绝对定位）：
+    //   若把列表塞进 #wei8-sync-time 内部，探针读 el.textContent 会把主时间戳和历史全拼在一起
+    //   （实测 "2026/0921/10.18.01" + "2026/0921/10.18.00 · #1" 粘成一坨）→ 主值与历史串味。
+    function setTimeText(txt, items) {
         window.__wei8Sync.lastTimeText = txt;
         var el = ensureTimeEl();
-        if (el && el.textContent !== txt) el.textContent = txt;
+        if (!el) return;
+        // 主时间戳：固定一个 label span（重建时清旧文本再写）
+        var label = el.querySelector(':scope > span:not(#wei8-sync-time-list span)');
+        if (!label) {
+            // 清除 el 的原始文本节点（历史列表是子节点，不受影响）
+            while (el.firstChild && el.firstChild.nodeType === 3) el.removeChild(el.firstChild);
+            label = document.createElement('span');
+            label.id = 'wei8-sync-time-label';
+            el.appendChild(label);
+        }
+        label.textContent = txt;
+        // 历史列表（点击展开；最新在顶；做成兄弟节点避免串味）
+        var list = document.getElementById('wei8-sync-time-list');
+        if (list && list.parentNode) list.parentNode.removeChild(list);
+        var haveItems = items && items.length > 0;
+        if (!haveItems) {
+            el.title = '';
+            return;
+        }
+        el.title = '点击展开最近 ' + items.length + ' 条版本';
+        list = document.createElement('div');
+        list.id = 'wei8-sync-time-list';
+        list.style.display = 'none';
+        list.style.position = 'absolute';
+        list.style.left = '0';
+        list.style.top = '1.2em';
+        list.style.zIndex = '100';
+        list.style.background = 'var(--color-bg, #1e1e1e)';
+        list.style.color = 'inherit';
+        list.style.border = '1px solid rgba(128,128,128,.3)';
+        list.style.borderRadius = '4px';
+        list.style.padding = '4px 6px';
+        list.style.fontSize = '0.85em';
+        list.style.minWidth = '14em';
+        list.style.whiteSpace = 'nowrap';
+        for (var i = 0; i < items.length; i++) {
+            var row = document.createElement('div');
+            row.style.padding = '1px 0';
+            var time = document.createElement('span');
+            time.textContent = items[i].ts;
+            row.appendChild(time);
+            if (items[i].note) {
+                var note = document.createElement('span');
+                note.textContent = ' · ' + items[i].note;
+                note.style.opacity = '0.6';
+                note.style.fontWeight = 'normal';
+                row.appendChild(note);
+            }
+            list.appendChild(row);
+        }
+        el.appendChild(list);
+        // 点击切换；文档点击收拢
+        el.onclick = function (e) {
+            e.stopPropagation();
+            list.style.display = list.style.display === 'none' ? 'block' : 'none';
+        };
+        document.onclick = function () {
+            if (list && list.parentNode) list.style.display = 'none';
+        };
     }
 
     // 渲染「同步」行时间戳 + 「Server status」行（两处同源，避免各写一套状态判断）
@@ -280,8 +358,18 @@
                     var localStr = fmtTs(new Date(json.updated_at));
                     window.__wei8Sync.lastServerAt = localStr;
 
-                    // ① 「同步」行后面的最后更新时间（老板要的位置）
-                    setTimeText(localStr);
+                    // ① 「同步」行后面的最后更新时间（老板要的位置）+ 最近 5 条下拉
+                    //    历史直接来自 Gist 响应的 history 字段（每次成功推送记一条，
+                    //    committed_at 精确到秒、已按新→旧排好、默认返回 5 条）。
+                    //    随 GET Gist 一起拿，不另开请求、不轮询——进设置刷新到即渲染。
+                    var items = [];
+                    var hist = Array.isArray(json.history) ? json.history : [];
+                    for (var k = 0; k < hist.length && items.length < 5; k++) {
+                        var d = parseTs(hist[k].committed_at);
+                        if (!d) continue;
+                        items.push({ ts: fmtTs(d), note: '#' + (hist.length - k) });
+                    }
+                    setTimeText(localStr, items);
 
                     // ② 原「Server status」行：只留时间（做成指向 Gist 网页的链接）
                     //    注意别再把「服务器版本」四个字重复写两遍（base 清空，文字只由 link 承担）
