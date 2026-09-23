@@ -435,7 +435,7 @@
 
         var hint = document.createElement('div');
         hint.id = 'wei8-sync-hist-hint';
-        hint.textContent = '点任意一条，可还原到该时刻的版本';
+        hint.textContent = '点亮着的那几条可以点，点了会问你要不要还原；灰的（写着「不可还原」）是拿不到云端版本号的旧记录';
         hint.style.opacity = '0.55';
         el.appendChild(hint);
 
@@ -474,14 +474,23 @@
 
         if (item.sha) {
             row.setAttribute('data-sha', item.sha);
+            row.setAttribute('data-restorable', '1');
             row.style.cursor = 'pointer';
             row.title = '点此把本机设置还原到 ' + item.ts + ' 那一版';
             row.addEventListener('click', function () { showRestoreConfirm(item); });
         } else {
-            // 明确说明为什么不能点，而不是让老板点了没反应（旧记录 / 超出 GitHub 保留范围）
+            // v3.18：光靠悬停提示不够 —— 老板的反馈是「选中了某个记录，但根本没有还原的选项」。
+            //   必须在行上**看得见**地写出为什么不能点，而不是让他以为功能没上线。
+            row.setAttribute('data-restorable', '0');
             row.style.opacity = '0.5';
             row.style.cursor = 'default';
             row.title = '这一版拿不到云端版本号，无法还原（多为本功能上线前的旧记录，或已超出 GitHub 保留范围）';
+            var no = document.createElement('span');
+            no.textContent = '不可还原';
+            no.style.flex = 'none';
+            no.style.opacity = '0.9';
+            no.style.fontSize = '0.85em';
+            row.appendChild(no);
         }
         list.appendChild(row);
     }
@@ -622,14 +631,14 @@
             });
     }
 
-    // ============ J) 版本号（sha）补齐（v3.17） ============
+    // ============ J) 版本号（sha）补齐（v3.17 起；v3.18 把兜底匹配从「秒级相等」改成「容忍窗口 + 一对一」） ============
     // 「按记录还原」需要 sha = 那次写入在 GitHub 上的修订号。
     //   主来源：推送响应里的 history[0].version（实测连续 6 次 PATCH 全部带上），推完即回填本机镜像。
     //   但有两类条目天生没 sha：①本功能上线前的旧记录；②换了设备、本机镜像是空的。
-    // 兜底：单独调 commits 端点取最近 30 个修订，按**时间戳精确匹配**回填。
-    //   ★ 实测 commits[i].committed_at 与详情端点的 updated_at 是同一秒同一个值，
-    //     而 recordHist 本来就会用 updated_at 校正上一条的 t —— 所以除「最新一条」外都能对上，
-    //     最新一条的 sha 由推送响应负责。两边合起来正好全覆盖。
+    // 兜底：单独调 commits 端点取最近 30 个修订，按**容忍窗口（±5 分钟）+ 一对一**回填。
+    //   v3.17 曾按「秒级完全相等」匹配，实机证明太严：recordHist 记的是本机发起时刻，
+    //   校正成 GitHub 的 updated_at 要等下一次推送，所以旧记录永远配不上 → 全是灰行。
+    //   反过来「最新一条」的 sha 由推送响应负责，两边合起来正好全覆盖。
     // 只在「本机历史确实缺 sha」时跑，且每次页面加载最多一次 ——
     //   否则 60s 轮询每次重渲染都多打一个请求，纯浪费。
     var commitsFetched = false;
@@ -647,25 +656,48 @@
             .then(function (resp) { return resp.status === 200 ? resp.json() : null; })
             .then(function (list) {
                 if (!Array.isArray(list) || !list.length) return;
-                var map = {};
+                /* v3.18：改「容忍窗口 + 一对一」匹配。
+                   老写法要求「本机记录的时刻」与 committed_at **秒级完全相等**，实际几乎对不上：
+                   recordHist 记的是**本机发起推送的时刻**，而把 t 校正成 GitHub 的 updated_at
+                   只发生在**下一次**推送时（见 recordHist 的 lastServerIso 那段）。
+                   于是老板手里那些 v3.17 之前的旧记录永远是灰行 —— 他能"选中"却没有还原入口。
+                   现在给 ±5 分钟窗口，按最近的未占用修订配对（一对一，不会两条记录抢同一个 sha）。 */
+                var pool = [];
                 for (var i = 0; i < list.length; i++) {
                     var c = list[i];
-                    if (c && c.version && c.committed_at) map[c.committed_at] = c.version;
+                    if (!c || !c.version || !c.committed_at) continue;
+                    var ms = Date.parse(c.committed_at);
+                    if (isNaN(ms)) continue;
+                    pool.push({ ms: ms, sha: c.version, used: false });
                 }
+                if (!pool.length) return;
                 var h = readMirror();
                 var changed = false;
+                var TOL = 5 * 60 * 1000;
                 for (var k = 0; k < h.length; k++) {
                     if (h[k].sha) continue;
                     var d = parseTs(h[k].t);
                     if (!d) continue;
-                    // committed_at 形如 2026-09-23T00:27:38Z（秒级）—— 对齐到秒、去掉毫秒再比
-                    var key = new Date(Math.floor(d.getTime() / 1000) * 1000)
-                        .toISOString().replace(/\.\d{3}Z$/, 'Z');
-                    if (map[key]) { h[k].sha = map[key]; changed = true; }
+                    var t = d.getTime();
+                    var best = -1;
+                    var bestDiff = TOL + 1;
+                    for (var q = 0; q < pool.length; q++) {
+                        if (pool[q].used) continue;
+                        var diff = Math.abs(pool[q].ms - t);
+                        if (diff > TOL || diff >= bestDiff) continue;
+                        best = q;
+                        bestDiff = diff;
+                    }
+                    if (best > -1) {
+                        h[k].sha = pool[best].sha;
+                        pool[best].used = true;
+                        changed = true;
+                    }
                 }
                 if (!changed) return;
                 writeMirror(h);
                 window.__wei8Sync.shaBackfilled = (window.__wei8Sync.shaBackfilled || 0) + 1;
+                window.__wei8Sync.shaBackfillTol = TOL;
                 renderServerStatus(token, id); // 重渲染一轮，灰行变成可点
             })
             .catch(function () { /* 拿不到就保持灰显 + 悬停说明原因，绝不静默失败 */ });

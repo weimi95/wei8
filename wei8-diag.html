@@ -92,7 +92,7 @@
         <main>
             <h1>wei8 存储自检</h1>
             <p class="sub">
-                这一页只**读**你浏览器里本站的存储状态，不修改任何设置。
+                这一页只<strong>读</strong>你浏览器里本站的存储状态，不修改任何设置。
                 用来回答一个问题：为什么打开导航站又变回了默认样子。
             </p>
 
@@ -109,17 +109,20 @@
 
             <h2>设置数据写入留痕</h2>
             <p class="hint">
-                导航站里一共有 5 处会改写「设置数据」。每次改写都会往这里留一条（最近 10 条）——
-                如果出现「每次打开又变回默认」，看这张表就知道<strong>开机时到底有没有谁改写了数据、是哪一层</strong>。
-                空表 = 本次打开没有被任何一层改写；<br />
-                只看到 <code>preset·首次安装</code> = 浏览器把数据清空了，于是走了首次安装流程（这条基本就是定论）。
+                导航站里我们自己有 <strong>6</strong> 处会改写「设置数据」，另有上游程序自身的写入
+                —— 每一次改写都会往这里留一条（最近 10 条）。
+                如果出现「每次打开又变回默认」或「删掉的书签刷新又回来」，看这张表就知道
+                <strong>开机时到底有没有谁改写了数据、是哪一层</strong>。<br />
+                没有署名的那些会被记成 <code>上游/未知写入</code>，并附上键数变化与增减的键名。空表 = 本次打开没有被任何东西改写；<br />
+                只看到 <code>preset·首次安装</code> = 浏览器把数据清空了，于是走了首次安装流程（这条基本就是定论）；<br />
+                看到 <code>preset·版本标记丢失</code> = 预置层每次打开都在重跑升级，你删掉的预置书签会被装回来。
             </p>
             <table id="t-writes"></table>
 
             <h2>持久性实测（最关键的一步）</h2>
             <p class="hint">
                 点下面的按钮会写入一个临时标记，然后请你按 <code>F5</code> 刷新本页：
-                刷新后标记还在 = 你的浏览器**能存住**数据；标记没了 = 浏览器**每次打开都会清空本站数据**。
+                刷新后标记还在 = 你的浏览器<strong>能存住</strong>数据；标记没了 = 浏览器<strong>每次打开都会清空本站数据</strong>。
             </p>
             <p>
                 <button id="btn-write">写入测试标记</button>
@@ -129,7 +132,7 @@
 
             <p class="foot">
                 本页不联网、不上传任何内容；显示的键值仅取「是否存在 / 长度 / 条数」，
-                令牌与密码**只报存在性，不显示内容**。
+                令牌与密码<strong>只报存在性，不显示内容</strong>。
             </p>
         </main>
 
@@ -253,7 +256,27 @@
                             var wd = new Date(w.at);
                             when = isNaN(wd.getTime()) ? String(w.at) : wd.toLocaleString('zh-CN');
                         }
-                        row(tWr, wi === 0 ? '最近一次写入' : '更早', esc(when) + ' — ' + esc(String(w.by || '未知来源')));
+                        // 写入守卫（v3.18）会给「非本层」的写入附一份结构摘要：键数变化 + 增删的键名。
+                        // 只陈述结构，不含内容 —— 表格里不出现老板自己的数据。
+                        var detail = '';
+                        if (w.d && typeof w.d === 'object') {
+                            var bits = [];
+                            if (w.d.beforeState) bits.push(w.d.beforeState);
+                            if (w.d.beforeKeys != null) bits.push('键数 ' + w.d.beforeKeys + ' → ' + w.d.afterKeys);
+                            if (w.d.added) bits.push('新增 ' + w.d.added + ' 个键');
+                            if (w.d.removed) bits.push('少了 ' + w.d.removed + ' 个键');
+                            if (w.d.presetLinksAdded) {
+                                bits.push('其中预置书签 +' + w.d.presetLinksAdded +
+                                    (w.d.sample ? '（' + w.d.sample + '）' : ''));
+                            }
+                            if (w.d.removedSample) bits.push('少的键：' + w.d.removedSample);
+                            if (w.d.note) bits.push(w.d.note);
+                            if (bits.length) {
+                                detail = '<br /><span style="opacity:.7">' + esc(bits.join('；')) + '</span>';
+                            }
+                        }
+                        row(tWr, wi === 0 ? '最近一次写入' : '更早',
+                            esc(when) + ' — ' + esc(String(w.by || '未知来源')) + detail);
                     }
                 }
 
@@ -304,7 +327,7 @@
                     var cur = get(PERSIST_KEY);
                     if (cur) {
                         out.innerHTML = '当前标记：' + yes('存在') + '（写入于 ' + esc(cur) + '）—— ' +
-                            '说明上次写入**存住了**。请按 F5 刷新，看它是否还在。';
+                            '说明上次写入<strong>存住了</strong>。请按 F5 刷新，看它是否还在。';
                     } else {
                         out.innerHTML = '当前标记：' + no('不存在') + '。' +
                             '点「写入测试标记」，然后按 F5 刷新本页再回来看。';

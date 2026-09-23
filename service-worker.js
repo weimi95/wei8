@@ -4,7 +4,7 @@
 // 同时后台拉网络刷新缓存（stale-while-revalidate）。无缓存才走网络，失败再兜底。
 // 代价：每次部署后首个打开可能是旧壳（后台已刷好，下次打开就是新的），最多落后一版。
 // 作用域是 /wei8/，与任何父级作用域的 SW 互不干涉（同作用域只能有一个 SW）。
-var CACHE = 'wei8-bonjourr-v5';
+var CACHE = 'wei8-bonjourr-v6';
 var PREFIX = 'wei8-bonjourr-';
 
 self.addEventListener('install', function () {
