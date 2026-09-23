@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="robots" content="noindex" />
+        <title>wei8 存储自检</title>
+        <style>
+            /* 自包含单页：不引任何外部资源，断网也能开。与 changelog 同一套配色。 */
+            :root {
+                --accent: 41, 144, 255;
+                --ok: 60, 160, 100;
+                --bad: 220, 70, 60;
+                --warn: 200, 140, 30;
+                --bg: #f4f5f7;
+                --card: #ffffff;
+                --text: #1c1f24;
+                --muted: #6b7280;
+                --line: #e3e6ea;
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #17191d;
+                    --card: #212429;
+                    --text: #e8eaed;
+                    --muted: #9aa1ab;
+                    --line: #33373e;
+                }
+            }
+            * { box-sizing: border-box; }
+            body {
+                margin: 0;
+                padding: 2rem 1.1rem 4rem;
+                background: var(--bg);
+                color: var(--text);
+                font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+                font-size: 16px;
+                line-height: 1.7;
+                -webkit-font-smoothing: antialiased;
+            }
+            main { max-width: 46rem; margin: 0 auto; }
+            h1 { margin: 0 0 .3rem; font-size: 1.45rem; font-weight: 600; }
+            .sub { margin: 0 0 1.6rem; color: var(--muted); font-size: .9rem; }
+
+            .verdict {
+                border-radius: 10px;
+                padding: 1rem 1.1rem;
+                margin-bottom: 1.6rem;
+                border: 1px solid var(--line);
+                background: var(--card);
+                font-size: 1.02rem;
+                line-height: 1.65;
+            }
+            .verdict.bad { border-color: rgb(var(--bad) / .5); background: rgb(var(--bad) / .08); }
+            .verdict.ok { border-color: rgb(var(--ok) / .5); background: rgb(var(--ok) / .08); }
+            .verdict.warn { border-color: rgb(var(--warn) / .5); background: rgb(var(--warn) / .08); }
+            .verdict strong { font-size: 1.08em; }
+
+            h2 { font-size: 1rem; font-weight: 600; margin: 1.8rem 0 .6rem; }
+            table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+            th, td { text-align: left; padding: .55rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+            th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+            td.v { font-family: ui-monospace, Consolas, monospace; font-size: .86rem; }
+            .yes { color: rgb(var(--ok)); }
+            .no { color: rgb(var(--bad)); }
+            .mid { color: rgb(var(--warn)); }
+
+            button {
+                font: inherit;
+                font-size: .92rem;
+                padding: .5rem 1.1rem;
+                border: 0;
+                border-radius: 999px;
+                cursor: pointer;
+                background: rgb(var(--accent) / .15);
+                color: rgb(var(--accent));
+                margin-right: .6rem;
+            }
+            button:hover { background: rgb(var(--accent) / .25); }
+            .hint { color: var(--muted); font-size: .86rem; margin: .7rem 0 0; }
+            code {
+                background: rgb(128 128 128 / .16);
+                padding: .1em .4em;
+                border-radius: 4px;
+                font-size: .88em;
+            }
+            .foot { margin-top: 2.4rem; padding-top: 1.1rem; border-top: 1px solid var(--line);
+                    color: var(--muted); font-size: .84rem; }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>wei8 存储自检</h1>
+            <p class="sub">
+                这一页只**读**你浏览器里本站的存储状态，不修改任何设置。
+                用来回答一个问题：为什么打开导航站又变回了默认样子。
+            </p>
+
+            <div id="verdict" class="verdict"><strong>检测中…</strong></div>
+
+            <h2>存储可写性</h2>
+            <table id="t-write"></table>
+
+            <h2>数据与凭据</h2>
+            <table id="t-data"></table>
+
+            <h2>我们自己的键</h2>
+            <table id="t-ours"></table>
+
+            <h2>持久性实测（最关键的一步）</h2>
+            <p class="hint">
+                点下面的按钮会写入一个临时标记，然后请你按 <code>F5</code> 刷新本页：
+                刷新后标记还在 = 你的浏览器**能存住**数据；标记没了 = 浏览器**每次打开都会清空本站数据**。
+            </p>
+            <p>
+                <button id="btn-write">写入测试标记</button>
+                <button id="btn-clear">清除测试标记</button>
+            </p>
+            <div id="persist-out" class="hint"></div>
+
+            <p class="foot">
+                本页不联网、不上传任何内容；显示的键值仅取「是否存在 / 长度 / 条数」，
+                令牌与密码**只报存在性，不显示内容**。
+            </p>
+        </main>
+
+        <script>
+            (function () {
+                'use strict';
+                var PERSIST_KEY = 'wei8-diag-persist';
+
+                function esc(s) {
+                    return String(s).replace(/[&<>"]/g, function (c) {
+                        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+                    });
+                }
+                function row(table, label, valueHtml) {
+                    var tr = document.createElement('tr');
+                    var th = document.createElement('th');
+                    th.textContent = label;
+                    var td = document.createElement('td');
+                    td.className = 'v';
+                    td.innerHTML = valueHtml;
+                    tr.appendChild(th);
+                    tr.appendChild(td);
+                    table.appendChild(tr);
+                }
+                function yes(t) { return '<span class="yes">' + esc(t) + '</span>'; }
+                function no(t) { return '<span class="no">' + esc(t) + '</span>'; }
+                function mid(t) { return '<span class="mid">' + esc(t) + '</span>'; }
+
+                function get(k) {
+                    try { return localStorage.getItem(k); } catch (e) { return null; }
+                }
+
+                // ---- 1) 可写性 ----
+                var writable = false, writeErr = '';
+                try {
+                    var tk = 'wei8-diag-write';
+                    localStorage.setItem(tk, '1');
+                    writable = localStorage.getItem(tk) === '1';
+                    localStorage.removeItem(tk);
+                } catch (e) {
+                    writeErr = String((e && e.name) || e) + (e && e.message ? ': ' + e.message : '');
+                }
+                var tW = document.getElementById('t-write');
+                row(tW, 'localStorage 可写', writable
+                    ? yes('可以')
+                    : no('不可以') + (writeErr ? ' — ' + esc(writeErr) : ' — 被浏览器禁用或已满'));
+
+                // ---- 2) 数据与凭据 ----
+                var raw = get('bonjourr');
+                var dataObj = null;
+                if (raw) { try { dataObj = JSON.parse(raw); } catch (e) { dataObj = null; } }
+                var linkCount = 0, hasGroups = false;
+                if (dataObj) {
+                    Object.keys(dataObj).forEach(function (k) {
+                        if (/^links\d{4}w8$/.test(k)) linkCount++;
+                    });
+                    hasGroups = !!dataObj.linkgroups;
+                }
+                var token = get('gistToken');
+                var gid = get('gistId');
+                var syncType = get('syncType');
+
+                var tD = document.getElementById('t-data');
+                row(tD, '设置数据 bonjourr',
+                    raw ? yes('存在') + '（' + raw.length + ' 字符）' : no('不存在'));
+                row(tD, '数据是否可解析',
+                    !raw ? mid('—（没有数据）')
+                         : (dataObj ? yes('是') : no('否（内容损坏）')));
+                row(tD, '含分组 linkgroups',
+                    !dataObj ? mid('—') : (hasGroups ? yes('有') : no('没有')));
+                row(tD, '预置快捷方式条数',
+                    !dataObj ? mid('—') : String(linkCount) + ' 条（预置应为 106）');
+                row(tD, '同步令牌 gistToken',
+                    token ? yes('存在') + '（' + token.length + ' 字符，内容不显示）' : no('不存在'));
+                row(tD, '同步 Gist ID',
+                    gid ? yes('存在') + '（' + esc(gid) + '）' : no('不存在'));
+                row(tD, '同步方式 syncType',
+                    syncType ? esc(syncType) : mid('未设置'));
+
+                // ---- 3) 我们自己的键 ----
+                var tO = document.getElementById('t-ours');
+                var presetMark = get('wei8-preset-v');
+                row(tO, '预置版本标记', presetMark ? yes('wei8-preset-v = ' + esc(presetMark)) : no('不存在（下次打开会重灌预置）'));
+                row(tO, '锁屏密码', get('wei8-lock-pass') ? yes('已改过（自定义密码）') : mid('未改过（用默认 2026）'));
+                row(tO, '免输窗口', get('wei8-settings-unlock') ? esc(get('wei8-settings-unlock')) : mid('无'));
+                var hist = get('wei8-sync-history');
+                var histN = 0;
+                if (hist) { try { var a = JSON.parse(hist); histN = Array.isArray(a) ? a.length : 0; } catch (e) {} }
+                row(tO, '同步历史镜像', hist ? yes(histN + ' 条') : no('不存在'));
+                row(tO, '天气数据源配置', get('wei8-weather') ? yes('存在') : mid('未设置（用默认 open-meteo）'));
+                row(tO, '定位缓存', get('wei8-geo') ? yes('存在') : mid('无'));
+                row(tO, '上游天气缓存', get('lastWeather') ? yes('存在') : mid('无'));
+
+                // 存储配额
+                if (navigator.storage && navigator.storage.estimate) {
+                    navigator.storage.estimate().then(function (e) {
+                        var used = e.usage || 0;
+                        var quota = e.quota || 0;
+                        var pct = quota ? (used / quota * 100) : 0;
+                        row(tO, '站点存储用量',
+                            Math.round(used / 1024) + ' KB / ' + Math.round(quota / 1024 / 1024) +
+                            ' MB（' + pct.toFixed(2) + '%）');
+                    }).catch(function () {});
+                }
+
+                // ---- 结论 ----
+                var v = document.getElementById('verdict');
+                var parts = [];
+                if (!writable) {
+                    v.className = 'verdict bad';
+                    parts.push('<strong>你的浏览器不允许本站保存数据。</strong>' +
+                        '这意味着所有设置（书签、背景、主题、同步令牌）在关闭页面后都会丢失 —— ' +
+                        '这正是「每次打开又变回默认」的直接原因。跟导航站的代码无关。');
+                } else if (!raw && !token) {
+                    v.className = 'verdict bad';
+                    parts.push('<strong>本站的存储现在是空的：没有设置数据，也没有同步令牌。</strong>' +
+                        '这解释了为什么页面显示默认样子，而且没有任何提示 —— ' +
+                        '云端备份要靠令牌才能取回，令牌也没了，所以恢复流程会静默跳过。');
+                } else if (!raw) {
+                    v.className = 'verdict warn';
+                    parts.push('<strong>没有设置数据，但同步令牌还在。</strong>' +
+                        '这种情况正常应该会自动从云端备份恢复；如果没恢复，说明云端那份也取不到了。');
+                } else if (!token) {
+                    v.className = 'verdict warn';
+                    parts.push('<strong>设置数据在，但没有同步令牌。</strong>' +
+                        '本机可以正常用，但云端备份不会自动恢复，也不会有任何提示。');
+                } else {
+                    v.className = 'verdict ok';
+                    parts.push('<strong>本站存储状态正常：设置数据与同步令牌都在。</strong>');
+                }
+                parts.push('<br /><br />请务必做下面的「持久性实测」—— 刷新后标记还在不在，才是一锤定音的判据。');
+                v.innerHTML = parts.join('');
+
+                // ---- 持久性实测 ----
+                var out = document.getElementById('persist-out');
+                var existing = get(PERSIST_KEY);
+                function showPersist() {
+                    var cur = get(PERSIST_KEY);
+                    if (cur) {
+                        out.innerHTML = '当前标记：' + yes('存在') + '（写入于 ' + esc(cur) + '）—— ' +
+                            '说明上次写入**存住了**。请按 F5 刷新，看它是否还在。';
+                    } else {
+                        out.innerHTML = '当前标记：' + no('不存在') + '。' +
+                            '点「写入测试标记」，然后按 F5 刷新本页再回来看。';
+                    }
+                }
+                document.getElementById('btn-write').addEventListener('click', function () {
+                    try {
+                        localStorage.setItem(PERSIST_KEY, new Date().toLocaleString('zh-CN'));
+                        showPersist();
+                        out.innerHTML += '<br /><strong>已写入。现在请按 F5 刷新本页。</strong>';
+                    } catch (e) {
+                        out.innerHTML = no('写入失败：' + String(e && e.message || e));
+                    }
+                });
+                document.getElementById('btn-clear').addEventListener('click', function () {
+                    try { localStorage.removeItem(PERSIST_KEY); } catch (e) {}
+                    showPersist();
+                });
+                showPersist();
+            })();
+        </script>
+    </body>
+</html>
