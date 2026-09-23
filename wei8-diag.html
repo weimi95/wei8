@@ -105,6 +105,12 @@
             <table id="t-data"></table>
 
             <h2>我们自己的键</h2>
+            <p class="hint">
+                这几项是导航站自己写的辅助键（<strong>不是</strong>你的设置数据本身）。里面两行值得单独看：<br />                <code>翻译词条缓存</code>：设置面板里那两个同步按钮的文案（应为「下载还原 / 上传备份」）就来自这份缓存。
+                上游程序只在「缓存里的语言码对得上」时复用缓存、<strong>一次请求都不发</strong>，
+                所以出现过「改成得到/发送之前的旧文案再也改不掉」这件事。看到「仍是旧文案」不用管，打开一次主页就会被自动清掉并重拉；<br />
+                <code>其中带版本号（可还原）</code>：同步记录里能点着还原的条数。写着「不可还原」的灰行点一下会给出解释，不是功能坏了。
+            </p>
             <table id="t-ours"></table>
 
             <h2>设置数据写入留痕</h2>
@@ -244,6 +250,22 @@
                 row(tO, '同步历史镜像', hist ? yes(histN + ' 条') : no('不存在'));
                 row(tO, '其中带版本号（可还原）',
                     !hist ? mid('—') : mid(histSha + ' / ' + histN + ' 条'));
+                // v3.20：翻译词条缓存 —— 上游 main.js 把整份词条存在这个键里，而且判据只有
+                //   「缓存里的语言码 === 当前语言码」→ 命中就一次请求都不发。
+                //   所以「设置面板里两个同步按钮的文案改不掉」看这一个键就够，不必去猜 SW。
+                var trRaw = get('translations');
+                var trOk = -1;
+                if (trRaw !== null && trRaw !== '') {
+                    trOk = (trRaw.indexOf('"Get":"下载还原"') > -1
+                            && trRaw.indexOf('"Send":"上传备份"') > -1) ? 1 : 0;
+                }
+                row(tO, '翻译词条缓存', trOk < 0
+                    ? mid('不存在（下次打开会重新拉取，正常）')
+                    : (trOk === 1
+                        ? yes('存在，且已是新文案（下载还原 / 上传备份）')
+                        : no('存在，但仍是旧文案（得到 / 发送）→ 打开一次主页就会被自动清掉并重拉')));
+                row(tO, '词条校验标记 wei8-tr-v',
+                    get('wei8-tr-v') ? esc(get('wei8-tr-v')) : mid('无'));
                 row(tO, '天气数据源配置', get('wei8-weather') ? yes('存在') : mid('未设置（用默认 open-meteo）'));
                 row(tO, '定位缓存', get('wei8-geo') ? yes('存在') : mid('无'));
                 row(tO, '上游天气缓存', get('lastWeather') ? yes('存在') : mid('无'));

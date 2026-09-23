@@ -50,9 +50,15 @@
  *   J. 修订号（sha）补齐（v3.17）：「按记录还原」要 sha，主来源是推送响应里的
  *      history[0].version（推完即回填本机镜像）；旧记录/换设备丢掉的，用 commits 端点
  *      按时间戳精确匹配补一次（每次页面加载最多一次）。
+ *      ★ v3.20 补第二来源：GET /gists/{id} 响应里的 history[0].version 就是「当前这一版」的
+ *      修订号，用它给**最新一行**补 sha。原来只有推送响应一个来源 → v3.17 之前攒下的记录、
+ *      换设备后空镜像的记录全是灰行，整张表点不出任何东西（老板报的「点记录没反应」）。
  *   K. 按记录还原（v3.17，老板要求）：历史表每行可点 → 确认 → GET /gists/{id}/{sha}
  *      取回那一版 → 整包写入本机。**什么都不删**：云端会把它记成一次新的修订，
  *      所以是「回到那一版」而不是「销毁现在」。缺 linkgroups 的内容直接拒绝，宁可不动。
+ *      ★ v3.20：灰行（拿不到版本号）也做成可点 —— 点了给一条 #wei8-restore-note 解释
+ *      「为什么不能还原 + 怎么才能有能还原的记录」。原写法是点了什么都不发生，
+ *      老板的感受只能是「这功能坏了」，而不是「这条记录不可还原」。
  *   L. 数据本体写入留痕（v3.17）：本层两处写 `localStorage['bonjourr']` 的地方各记一条到独立键
  *      `wei8-writes`（最近 10 条）。老板报「每次打开又变回默认」时，自检页能直接回答
  *      「是不是有层在开机时重写了数据、是哪一层」。
@@ -435,7 +441,7 @@
 
         var hint = document.createElement('div');
         hint.id = 'wei8-sync-hist-hint';
-        hint.textContent = '点亮着的那几条可以点，点了会问你要不要还原；灰的（写着「不可还原」）是拿不到云端版本号的旧记录';
+        hint.textContent = '点亮着的那几条可以点，点了会问你要不要还原；灰的（写着「不可还原」）是拿不到云端版本号的旧记录 —— 点它也会告诉你怎么回事';
         hint.style.opacity = '0.55';
         el.appendChild(hint);
 
@@ -451,6 +457,38 @@
         return el;
     }
 
+    // v3.20：把 GET /gists/{id} 响应里的 history[0].version（= 当前修订号）补到**最新那一行**。
+    //   为什么原来没有、为什么必须补：sha 的唯一来源一直是「推送响应」，所以
+    //     ① v3.17 之前攒下的记录：云端那份 wei8SyncHistory 里没有 sha 字段，镜像里也没有；
+    //     ② 换设备：镜像空，靠 commits 端点补，但超出 30 个修订的配不上，且那次请求可能早就打过了
+    //        （commitsFetched 是一次性闩），闩上之后新出现的缺 sha 条目再也没人管；
+    //     ③ 老板刚好在一段时间里只「下载还原」不推送。
+    //   这些情况下整张表都是灰行 —— 老板的原话「点下面的记录也没弹出来问我要不要还原」，
+    //   有很大一部分就是这么来的（灰行当时**没有**点击反馈，点了确实什么都不发生）。
+    //   GET 响应的 history 字段被上游截断过（不能当历史列表用，见 renderServerStatus 的注释），
+    //   但 history[0].version 仍然是「当前这一版」的确定修订号 —— 拿它给最新一行补 sha 无损。
+    //
+    // ★ 只认 hist[0]（最新那条），不往后扫：
+    //   当前修订号只对「刚刚那一次写入」有意义。往后扫会把同一个修订号也发给更旧的条目 ——
+    //   老板点那条旧记录，还原回来的却是**最新**那一版，等于骗他。
+    //   ±10 分钟窗口（与 recordHist 校正时间同源）则挡住「最新一条其实是很久以前的记录」的情况。
+    function attachNewestSha(iso, sha) {
+        if (!sha || !iso) return;
+        var ms = Date.parse(iso);
+        if (isNaN(ms)) return;
+        try {
+            var hist = readMirror();
+            if (!hist.length || !hist[0]) return;
+            if (hist[0].sha) return;                    // 已有 sha（推送响应给的更精确）就不动
+            var d = parseTs(hist[0].t);
+            if (!d) return;
+            if (Math.abs(d.getTime() - ms) > 10 * 60 * 1000) return;
+            hist[0].sha = sha;
+            writeMirror(hist);
+            window.__wei8Sync.shaFromGist = (window.__wei8Sync.shaFromGist || 0) + 1;
+        } catch (e) { /* 补不上就维持灰显，绝不静默失败：灰行现在点了会给解释 */ }
+    }
+
     // 历史表里的一行：左边时刻，右边「自动/手动」。有 sha 的行可点 → 挑它还原。
     // 用参数 item 而不是闭包变量，避免 for 循环里 var 共享导致的「点哪条都还原最后一条」。
     function attachHistRow(list, item) {
@@ -459,6 +497,7 @@
         row.style.justifyContent = 'space-between';
         row.style.gap = '1.2em';
         row.style.padding = '0.05em 0';
+        row.style.userSelect = 'none';       // v3.20：可点的行别在双击时顺手选中文字
 
         var time = document.createElement('span');
         time.textContent = item.ts;
@@ -481,10 +520,14 @@
         } else {
             // v3.18：光靠悬停提示不够 —— 老板的反馈是「选中了某个记录，但根本没有还原的选项」。
             //   必须在行上**看得见**地写出为什么不能点，而不是让他以为功能没上线。
+            // ★ v3.20：灰行也做成可点，点了**给一句解释**（#wei8-restore-note）。
+            //   原来的写法是「灰行点了什么都不发生」—— 老板点完的感受就是「这功能坏了」，
+            //   而不是「这条记录不可还原」。一个点不出任何反馈的点击目标 = 静默失败。
             row.setAttribute('data-restorable', '0');
             row.style.opacity = '0.5';
-            row.style.cursor = 'default';
-            row.title = '这一版拿不到云端版本号，无法还原（多为本功能上线前的旧记录，或已超出 GitHub 保留范围）';
+            row.style.cursor = 'pointer';
+            row.title = '这一版拿不到云端版本号，无法还原（多为本功能上线前的旧记录，或已超出 GitHub 保留范围）—— 点一下会告诉你怎么办';
+            row.addEventListener('click', function () { showNoRestoreNote(item); });
             var no = document.createElement('span');
             no.textContent = '不可还原';
             no.style.flex = 'none';
@@ -523,11 +566,16 @@
         var hist = ensureHistEl();
         if (!hist) return;
         var list = hist.querySelector('#wei8-sync-hist-list') || hist;
-        while (list.firstChild) list.removeChild(list.firstChild);
         if (!items || items.length === 0) {
-            hist.style.display = 'none';
+            /* v3.20：items 为空**不等于**「没有记录」。
+               idle() 那三条分支（等认证 / 没数据 / 读失败，含 60 秒轮询里偶发的 403 限流）
+               都是不带 items 调过来的；旧写法在这里无条件 display:none，于是老板正看着的
+               记录表会在一次瞬时错误后被抹掉 —— 记录还在不在、点了有没有反应都无从谈起。
+               这些行本来就是本机镜像里的历史，与本次请求成不成功无关，所以：已经渲染过就留着。 */
+            if (!list.children.length) hist.style.display = 'none';
             return;
         }
+        while (list.firstChild) list.removeChild(list.firstChild);   // 重渲染前清空（只在真有 items 时）
         hist.style.display = 'block';
         hist.title =
             '最近 ' + items.length + ' 条同步记录（新→旧；自动=有改动自动推送，手动=点「上传备份」）；点任意一条可还原到该版本';
@@ -578,6 +626,12 @@
                     /* v3.16：留一份原始 ISO，供 recordHist 校正上一条时间戳用
                        （recordHist 用的是「本地发起时刻」，与 GitHub 的 updated_at 常差几秒~几十秒） */
                     window.__wei8Sync.lastServerIso = json.updated_at;
+
+                    /* v3.20：先用响应里的当前修订号给最新一行补 sha，**再**渲染 ——
+                       顺序不能反：反了这一轮渲染出来的最新一行仍是灰的，得等下一轮才亮，
+                       老板点下去依然没反应（这类「差一轮」的 bug 只在真机上表现为「功能坏了」）。 */
+                    attachNewestSha(json.updated_at,
+                        json.history && json.history[0] && json.history[0].version);
 
                     // ① 「同步」行后面的最后更新时间（老板要的位置）+ 下方最近记录表格。
                     //    ★ v3.15 起历史来自本层自维护的 wei8SyncHistory（Gist content 顶层键
@@ -714,22 +768,63 @@
     function removeRestoreConfirm() {
         var old = document.getElementById('wei8-restore-confirm');
         if (old && old.parentNode) old.parentNode.removeChild(old);
+        var old2 = document.getElementById('wei8-restore-note');
+        if (old2 && old2.parentNode) old2.parentNode.removeChild(old2);
     }
 
-    // 确认条：不静默动数据，也不用 window.confirm（阻塞、且自动化探针点不到）。
-    // 观感沿用「覆盖本机 / 合并」那套行内二选一。
-    function showRestoreConfirm(item) {
+    // v3.20：所有插在记录表下面的小条的公共外壳 —— 统一「贴一条竖线 + 轻底色 + 自动滚进视野」。
+    //   为什么要统一外壳：老板点完看不到东西，一半是「条生成了但在可视区外/不够显眼」。
+    //   只把它生成出来（探针断言的那种）不足以说明人看得见，所以外观也进实现。
+    function mkNoteBar(id) {
         var hist = document.getElementById('wei8-sync-hist');
-        if (!hist || !hist.parentNode) return;
+        if (!hist || !hist.parentNode) return null;
         removeRestoreConfirm();
         var bar = document.createElement('div');
-        bar.id = 'wei8-restore-confirm';
+        bar.id = id;
         bar.style.fontSize = '0.85em';
         bar.style.lineHeight = '1.6';
         bar.style.padding = '0.45em 0.6em';
         bar.style.marginTop = '0.35em';
         bar.style.border = '1px solid rgba(128,128,128,.35)';
+        // 分开写三个分量：写成 borderLeft 简写时，值里带 var() 会被 CSSOM 判为无效而整条丢弃
+        //（实测 bar.style.borderLeftWidth 读回来是空串）——竖线就白加了。
+        bar.style.borderLeftWidth = '3px';
+        bar.style.borderLeftStyle = 'solid';
+        bar.style.borderLeftColor = 'rgb(var(--accent-color, 41 144 255))';
         bar.style.borderRadius = '6px';
+        bar.style.background = 'rgba(128,128,128,.10)';
+        hist.parentNode.insertBefore(bar, hist.nextSibling);
+        // 插完立刻把它滚到**视野中间** —— 「生成了但在屏幕外」和「没生成」对老板是一回事。
+        // 用 center 而不是 nearest：nearest 在「小条正好是面板内容的最后一块」时只会把它贴到
+        // 下边缘（实测 getBoundingClientRect().top 落在 899 / 视口 900），仍然看不全。
+        try { bar.scrollIntoView({ block: 'center' }); } catch (e) { /* 老浏览器不支持就跳过 */ }
+        return bar;
+    }
+
+    // v3.20：灰行（拿不到云端版本号）点了给一句人话，而不是什么都不发生。
+    //   能做的两件事都写清楚：① 去点「上传备份」，新记录就带版本号；
+    //   ② 超出 GitHub 保留范围的旧版本来就取不回来，这不是页面的问题。
+    function showNoRestoreNote(item) {
+        var bar = mkNoteBar('wei8-restore-note');
+        if (!bar) return;
+        var tip = document.createElement('div');
+        tip.textContent = '这条记录（' + item.ts + '）拿不到云端版本号，所以没法还原 —— '
+            + '它不是坏了：多为「按记录还原」这个功能上线之前留下的旧记录，或者已经超出 GitHub 的保留范围。'
+            + '点一次上面的「上传备份」，从这一条往后的记录就都能还原了。';
+        bar.appendChild(tip);
+        var row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '0.8em';
+        row.style.marginTop = '0.3em';
+        row.appendChild(mkBtn('知道了', removeRestoreConfirm));
+        bar.appendChild(row);
+    }
+
+    // 确认条：不静默动数据，也不用 window.confirm（阻塞、且自动化探针点不到）。
+    // 观感沿用「覆盖本机 / 合并」那套行内二选一。
+    function showRestoreConfirm(item) {
+        var bar = mkNoteBar('wei8-restore-confirm');
+        if (!bar) return;
 
         var tip = document.createElement('div');
         tip.textContent =
@@ -746,7 +841,6 @@
         }));
         row.appendChild(mkBtn('取消', removeRestoreConfirm));
         bar.appendChild(row);
-        hist.parentNode.insertBefore(bar, hist.nextSibling);
     }
 
     function restoreRevision(item) {
