@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.18</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.19</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,32 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.19</span><span class="date">2026-09-23</span>
+                    <ul class="changes">
+                        <li>
+                            <strong>删掉的书签不会再自己回来了 —— 从根上改掉升级方式</strong>。
+                            以前预置升级的做法是「先把自己那一批书签全删掉、再把新的整批写回去」，
+                            所以你<strong>特意删掉</strong>的那几条（比如百度），只要赶上一次预置更新就必然复活。
+                            现在改成<strong>合并</strong>：你数据里已有的键一个字都不动，
+                            只补「本版新增的」；上一版预置里有、你数据里没有的 = 你删的，<strong>不补</strong>。
+                        </li>
+                        <li>
+                            升级的判据是预置层自己记的一份<strong>「上一版预置清单」</strong>。
+                            这份清单要是丢了，它分不清「新预置」和「你删的」，于是
+                            <strong>一条都不补</strong>——宁可漏一条新书签，也不把你删掉的装回来。这是有意的保守。
+                        </li>
+                        <li>
+                            <strong>代价（已确认接受）</strong>：以后我们主动改某条预置书签的名字或网址，
+                            也不会再覆盖你那一份。你自己改过的标题、网址从此永久保留。
+                        </li>
+                        <li>
+                            记录里现在会写清这次到底做了什么，例如
+                            <strong>「合并更新：补 N 条新增……你改过的原样保留、你删掉的刻意不补」</strong>；
+                            真的无事可做时<strong>不再留记录</strong>，免得记录表被空条目刷满。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.18</span><span class="date">2026-09-23</span>
                     <ul class="changes">
                         <li>

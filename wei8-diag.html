@@ -114,8 +114,10 @@
                 如果出现「每次打开又变回默认」或「删掉的书签刷新又回来」，看这张表就知道
                 <strong>开机时到底有没有谁改写了数据、是哪一层</strong>。<br />
                 没有署名的那些会被记成 <code>上游/未知写入</code>，并附上键数变化与增减的键名。空表 = 本次打开没有被任何东西改写；<br />
-                只看到 <code>preset·首次安装</code> = 浏览器把数据清空了，于是走了首次安装流程（这条基本就是定论）；<br />
-                看到 <code>preset·版本标记丢失</code> = 预置层每次打开都在重跑升级，你删掉的预置书签会被装回来。
+                只                看到 <code>preset·首次安装</code> = 浏览器把数据清空了，于是走了首次安装流程（这条基本就是定论）；<br />
+                看到 <code>preset·合并更新</code> = 预置层这次确实动了数据，括号里会写明补了几条新增、你删掉的几条刻意没补；<br />
+                看到 <code>preset·版本标记丢失</code> = 标记没写住，预置层每次打开都会白跑一遍。v3.19 起这<strong>不再</strong>导致「删掉的预置书签被装回来」（升级已改成合并式，没有新增就什么都不写），但说明本机存储有异常，值得查；<br />
+                看到 <code>preset·预置键清单缺失</code> = 升级判据丢了，这次<strong>一条书签都没补</strong>（有意的保守：宁可不补，也不复活你删掉的）。
             </p>
             <table id="t-writes"></table>
 
@@ -216,6 +218,14 @@
                 var tO = document.getElementById('t-ours');
                 var presetMark = get('wei8-preset-v');
                 row(tO, '预置版本标记', presetMark ? yes('wei8-preset-v = ' + esc(presetMark)) : no('不存在（下次打开会重灌预置）'));
+                // v3.19：预置层记的「上一版预置了哪些键」，用来区分「本版新增」和「你自己删的」。
+                // 这份清单丢了，升级时就一条新书签都不补（宁可不补也不复活），所以值得单独看一眼。
+                var pkRaw = get('wei8-preset-keys');
+                var pkN = -1;
+                if (pkRaw) { try { var pkv = JSON.parse(pkRaw); if (Array.isArray(pkv)) pkN = pkv.length; } catch (e) { pkN = -1; } }
+                row(tO, '预置键清单', !pkRaw ? no('不存在（下次升级一条书签都不补）')
+                    : (pkN < 0 ? no('存在但内容损坏（' + pkRaw.length + ' 字符）')
+                               : yes(pkN + ' 条（' + pkN - 1 + ' 条书签 + 分组）')));
                 row(tO, '锁屏密码', get('wei8-lock-pass') ? yes('已改过（自定义密码）') : mid('未改过（用默认 2026）'));
                 row(tO, '免输窗口', get('wei8-settings-unlock') ? esc(get('wei8-settings-unlock')) : mid('无'));
                 var hist = get('wei8-sync-history');
