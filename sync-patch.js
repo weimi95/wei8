@@ -43,6 +43,19 @@
  *      · 本机有效但与云端不一致 → 右下角小条提示「点此进设置处理」（不自动动本机）；
  *      · 一致/断网 → 完全安静。进设置时的检查（F）照旧。
  *      比对/合并一律把 `wei8SyncHistory` 排除在外 —— 它是本层的记录，不是设置数据。
+ *   I. 换版提示（v3.17）：SW 是「缓存优先秒开」，代价是部署后**首个打开的页面仍是旧壳**，
+ *      旧壳连新版 js 都不会请求 → 看着像「改了不生效」。新 SW 接管旧页面时会触发
+ *      controllerchange，这时右下角提示「点此刷新」。只在加载时已有 controller 才监听，
+ *      首次访问不提示（否则每次冷启动都弹，成骚扰）。不做自动刷新 —— 老板可能在改设置，重载会丢输入。
+ *   J. 修订号（sha）补齐（v3.17）：「按记录还原」要 sha，主来源是推送响应里的
+ *      history[0].version（推完即回填本机镜像）；旧记录/换设备丢掉的，用 commits 端点
+ *      按时间戳精确匹配补一次（每次页面加载最多一次）。
+ *   K. 按记录还原（v3.17，老板要求）：历史表每行可点 → 确认 → GET /gists/{id}/{sha}
+ *      取回那一版 → 整包写入本机。**什么都不删**：云端会把它记成一次新的修订，
+ *      所以是「回到那一版」而不是「销毁现在」。缺 linkgroups 的内容直接拒绝，宁可不动。
+ *   L. 数据本体写入留痕（v3.17）：本层两处写 `localStorage['bonjourr']` 的地方各记一条到独立键
+ *      `wei8-writes`（最近 10 条）。老板报「每次打开又变回默认」时，自检页能直接回答
+ *      「是不是有层在开机时重写了数据、是哪一层」。
  *
  * 注意：本层只清「明显是序列化残渣」的值，不动任何正常字符串；自动同步的推送
  * 走同源 https://api.github.com/gists，复用本地已登录态/令牌，不引入新凭据。
@@ -74,6 +87,25 @@
 
     var cleaned = cleanDirty();
 
+    // ---------------------------------------------------------------------
+    // 数据本体写入留痕（v3.17）
+    //   全站只有 5 处会写 localStorage['bonjourr']，本文件占 2 处（设置面板「覆盖本机/合并」、
+    //   装载期本机数据无效时的云端恢复）。每处写完往 `wei8-writes` 这个**独立小键**里记一条
+    //   （最近 10 条，新→旧），自检页 wei8-diag.html 会读出来展示。
+    //   老板报「每次打开又变回默认」时，这张表能直接回答「是不是有层在开机时重写了数据、哪一层」。
+    //   取舍与 weather-patch.js 里同一函数一致：不抽公共文件（早期层不能有加载依赖），
+    //   4 行代码各留一份，换「任一层单独挂掉都不影响别的层」；写的是独立键，绝不写进 bonjourr 自己
+    //   （那会触发上游 storage 事件 → 再推一轮同步，自己咬自己）。
+    // ---------------------------------------------------------------------
+    function logWrite(by) {
+        try {
+            var L = JSON.parse(localStorage.getItem('wei8-writes') || '[]');
+            if (!Array.isArray(L)) L = [];
+            L.unshift({ at: new Date().toISOString(), by: by });
+            localStorage.setItem('wei8-writes', JSON.stringify(L.slice(0, 10)));
+        } catch (e) { /* 留痕失败不影响主流程 */ }
+    }
+
     // 可观测标记：探针用它区分「本层接上了」和「压根没跑」
     window.__wei8Sync = {
         cleaned: cleaned,
@@ -88,6 +120,11 @@
         pullCount: 0,       // 「合并/覆盖」写入本机的次数（探针读）
         lastPullAt: 0,
         lastPullStatus: null, // 'same'|'prompt'|'no-token'|'no-id'|'offline'|'error'
+        restored: 0,          // 按记录还原成功的次数（v3.17，探针读）
+        lastRestoreTs: null,  // 最近一次还原到的时间标签（探针读）
+        shaBackfilled: 0,     // 用 commits 端点补 sha 的轮次（v3.17，探针读）
+        histShas: null,       // 历史表各行有没有 sha（'101…'，1=那一行可点还原；探针读）
+        versionToasts: 0,     // 换版提示弹过几次（v3.17，探针读）
     };
 
     // A) 抢先清理 —— 上游的「得到 / 发送」是 clickdown 库挂在**按钮自身**上的
@@ -189,20 +226,31 @@
         return data[HIST_FIELD];
     }
 
-    // 合并去重：extra(远端历史) ∪ 数据本体 ∪ 本地镜像，按 t 倒序，最多 HIST_MAX 条
+    // 合并去重：extra(远端历史) ∪ 数据本体 ∪ 本地镜像，按 t 倒序，最多 HIST_MAX 条。
+    // v3.17：条目结构扩成 {t, m, sha} —— sha 是那次写入在 GitHub 上的**修订版本号**，
+    //   「按记录还原」就靠它回取那一版（GET /gists/{id}/{sha}，实测 6/6 精确取回）。
+    //   同一个 t 可能同时出现在云端与本机镜像里，其中一份带 sha 就用它 ——
+    //   不能因为先遇到没 sha 的那份就把 sha 丢了（否则「能还原的行」会莫名变灰）。
     function mergeHist(extra) {
-        var seen = {};
-        var out = [];
+        var byT = {};
+        var order = [];
         var pool = (Array.isArray(extra) ? extra : [])
             .concat(histFromData(readSyncData()))
             .concat(readMirror());
-        pool.sort(function (a, b) { return a && b && a.t < b.t ? 1 : -1; });
-        for (var i = 0; i < pool.length && out.length < HIST_MAX; i++) {
+        for (var i = 0; i < pool.length; i++) {
             var it = pool[i];
-            if (!it || !it.t || seen[it.t]) continue;
-            seen[it.t] = 1;
-            out.push({ t: it.t, m: it.m === 'manual' ? 'manual' : 'auto' });
+            if (!it || !it.t) continue;
+            var e = byT[it.t];
+            if (!e) {
+                e = byT[it.t] = { t: it.t, m: it.m === 'manual' ? 'manual' : 'auto', sha: it.sha || null };
+                order.push(it.t);
+            } else if (!e.sha && it.sha) {
+                e.sha = it.sha;
+            }
         }
+        order.sort(function (a, b) { return a < b ? 1 : -1; });
+        var out = [];
+        for (var j = 0; j < order.length && out.length < HIST_MAX; j++) out.push(byT[order[j]]);
         return out;
     }
 
@@ -225,6 +273,25 @@
         hist = hist.slice(0, HIST_MAX);
         writeMirror(hist);
         return hist;
+    }
+
+    // v3.17：把「刚刚这次推送」的修订版本号写回它对应的那条历史（sha 字段）。
+    //
+    // 为什么是「事后补写」而不是「推之前就写好」：sha 由 GitHub 在写入**之后**才产生，
+    // 只能从响应里取（PATCH/POST 响应的 history[0].version，实测 6/6 都有）。
+    // 所以推完立刻回填本机镜像；云端那份要等**下一次**推送重写整份 wei8SyncHistory 时才带上 ——
+    // 与既有的「用 updated_at 校正上一条时间」是同一套自愈思路。
+    //
+    // 只认 pushedT：并发/交错的记录（比如推送在飞时老板手动点了一次「上传备份」）不能张冠李戴。
+    function attachSha(sha, pushedT) {
+        if (!sha || !pushedT) return;
+        try {
+            var hist = readMirror();
+            if (!hist.length || hist[0].t !== pushedT) return;
+            if (hist[0].sha === sha) return;
+            hist[0].sha = sha;
+            writeMirror(hist);
+        } catch (e) { /* 回填失败不影响推送 */ }
     }
 
     // 「下载/上传」是否被点到（preGuard 用；手动「上传备份」要记 manual 条目）
@@ -343,6 +410,9 @@
     // v3.16（老板定稿）：同步历史改成「同步」行下方的**常驻小表格** —— 固定 3 行高，
     // 超过 3 条自动出滚动条。不再做成点击展开的下拉（v3.15 老板反馈：记录不显眼、
     // 得点开才知道有几条）。
+    // v3.17：表格每行变成**可点还原**（老板：「我其实想做成能手动挑选哪个记录指定还原」）。
+    //   因此拆成两层：#wei8-sync-hist（容器：一行常驻提示 + 下面滚动列表）> #wei8-sync-hist-list。
+    //   拆两层是为了让「点一条可还原」这句提示**常驻不被滚走**；滚动高度仍固定 4.5em（≈3 行）。
     // 位置：插在 .wrapper 的**后面**（同为 .param 的直接子元素），**不进** wrapper ——
     // wrapper 是 flex + space-between，多塞一个子元素会把「同步 | 时间戳 | 按钮」撑散。
     function ensureHistEl() {
@@ -362,12 +432,58 @@
         el.style.marginTop = '2px';
         el.style.padding = '2px 0 2px 4px';
         el.style.borderTop = '1px solid rgba(128,128,128,.22)';
-        el.style.maxHeight = '4.5em';   // ≈3 行，第 4 条起靠滚动条看
-        el.style.overflowY = 'auto';
-        el.style.overflowX = 'hidden';
-        el.style.whiteSpace = 'nowrap';
+
+        var hint = document.createElement('div');
+        hint.id = 'wei8-sync-hist-hint';
+        hint.textContent = '点任意一条，可还原到该时刻的版本';
+        hint.style.opacity = '0.55';
+        el.appendChild(hint);
+
+        var list = document.createElement('div');
+        list.id = 'wei8-sync-hist-list';
+        list.style.maxHeight = '4.5em';   // ≈3 行，第 4 条起靠滚动条看
+        list.style.overflowY = 'auto';
+        list.style.overflowX = 'hidden';
+        list.style.whiteSpace = 'nowrap';
+        el.appendChild(list);
+
         parent.insertBefore(el, wrapper.nextSibling);
         return el;
+    }
+
+    // 历史表里的一行：左边时刻，右边「自动/手动」。有 sha 的行可点 → 挑它还原。
+    // 用参数 item 而不是闭包变量，避免 for 循环里 var 共享导致的「点哪条都还原最后一条」。
+    function attachHistRow(list, item) {
+        var row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.justifyContent = 'space-between';
+        row.style.gap = '1.2em';
+        row.style.padding = '0.05em 0';
+
+        var time = document.createElement('span');
+        time.textContent = item.ts;
+        row.appendChild(time);
+
+        if (item.note) {
+            var note = document.createElement('span');
+            note.textContent = item.note;
+            note.style.opacity = '0.6';
+            note.style.flex = 'none';
+            row.appendChild(note);
+        }
+
+        if (item.sha) {
+            row.setAttribute('data-sha', item.sha);
+            row.style.cursor = 'pointer';
+            row.title = '点此把本机设置还原到 ' + item.ts + ' 那一版';
+            row.addEventListener('click', function () { showRestoreConfirm(item); });
+        } else {
+            // 明确说明为什么不能点，而不是让老板点了没反应（旧记录 / 超出 GitHub 保留范围）
+            row.style.opacity = '0.5';
+            row.style.cursor = 'default';
+            row.title = '这一版拿不到云端版本号，无法还原（多为本功能上线前的旧记录，或已超出 GitHub 保留范围）';
+        }
+        list.appendChild(row);
     }
 
     // 写「时间戳文本 + 下方最近记录小表格」。
@@ -394,35 +510,19 @@
         }
         label.textContent = txt;
 
-        // 最近记录：常驻 3 行小表格，超出靠滚动条
+        // 最近记录：常驻 3 行小表格，超出靠滚动条；每行可点还原
         var hist = ensureHistEl();
         if (!hist) return;
-        while (hist.firstChild) hist.removeChild(hist.firstChild);
+        var list = hist.querySelector('#wei8-sync-hist-list') || hist;
+        while (list.firstChild) list.removeChild(list.firstChild);
         if (!items || items.length === 0) {
             hist.style.display = 'none';
             return;
         }
         hist.style.display = 'block';
         hist.title =
-            '最近 ' + items.length + ' 条同步记录（新→旧；自动=有改动自动推送，手动=点「上传备份」）';
-        for (var i = 0; i < items.length; i++) {
-            var row = document.createElement('div');
-            row.style.display = 'flex';
-            row.style.justifyContent = 'space-between';
-            row.style.gap = '1.2em';
-            row.style.padding = '0.05em 0';
-            var time = document.createElement('span');
-            time.textContent = items[i].ts;
-            row.appendChild(time);
-            if (items[i].note) {
-                var note = document.createElement('span');
-                note.textContent = items[i].note;
-                note.style.opacity = '0.6';
-                note.style.flex = 'none';
-                row.appendChild(note);
-            }
-            hist.appendChild(row);
-        }
+            '最近 ' + items.length + ' 条同步记录（新→旧；自动=有改动自动推送，手动=点「上传备份」）；点任意一条可还原到该版本';
+        for (var i = 0; i < items.length; i++) attachHistRow(list, items[i]);
     }
 
     // 渲染「同步」行时间戳 + 「Server status」行（两处同源，避免各写一套状态判断）
@@ -487,7 +587,7 @@
                         var it = merged[k];
                         var d = parseTs(it.t);
                         if (!d) continue;
-                        items.push({ ts: fmtTs(d), note: it.m === 'manual' ? '手动' : '自动' });
+                        items.push({ ts: fmtTs(d), note: it.m === 'manual' ? '手动' : '自动', sha: it.sha || null });
                     }
                     /* ★ v3.16：最新一条的真实时间 = Gist 的 updated_at。
                        recordHist 记的是「本地发起推送的时刻」，而主时间戳显示的是 GitHub 的
@@ -496,6 +596,10 @@
                        （持久化校正交给 recordHist 随下一次推送重写整份历史）。 */
                     if (items.length) items[0].ts = localStr;
                     setTimeText(localStr, items);
+                    // v3.17：本机历史里缺 sha 的条目，用 commits 端点补一次（每页只补一次），
+                    //   补完自己重渲染一轮 —— 老板看到的就是「能还原的行」而不是灰行。
+                    window.__wei8Sync.histShas = items.map(function (x) { return x.sha ? 1 : 0; }).join('');
+                    fillShas(token, id);
 
                     // ② 原「Server status」行：只留时间（做成指向 Gist 网页的链接）
                     //    注意别再把「服务器版本」四个字重复写两遍（base 清空，文字只由 link 承担）
@@ -516,6 +620,144 @@
             .catch(function () {
                 /* 网络异常，保留上次文案 */
             });
+    }
+
+    // ============ J) 版本号（sha）补齐（v3.17） ============
+    // 「按记录还原」需要 sha = 那次写入在 GitHub 上的修订号。
+    //   主来源：推送响应里的 history[0].version（实测连续 6 次 PATCH 全部带上），推完即回填本机镜像。
+    //   但有两类条目天生没 sha：①本功能上线前的旧记录；②换了设备、本机镜像是空的。
+    // 兜底：单独调 commits 端点取最近 30 个修订，按**时间戳精确匹配**回填。
+    //   ★ 实测 commits[i].committed_at 与详情端点的 updated_at 是同一秒同一个值，
+    //     而 recordHist 本来就会用 updated_at 校正上一条的 t —— 所以除「最新一条」外都能对上，
+    //     最新一条的 sha 由推送响应负责。两边合起来正好全覆盖。
+    // 只在「本机历史确实缺 sha」时跑，且每次页面加载最多一次 ——
+    //   否则 60s 轮询每次重渲染都多打一个请求，纯浪费。
+    var commitsFetched = false;
+    function fillShas(token, id) {
+        if (commitsFetched || !token || !id) return;
+        var hist = readMirror();
+        var missing = 0;
+        for (var i = 0; i < hist.length; i++) if (!hist[i].sha) missing++;
+        if (!missing) return;
+        commitsFetched = true;
+        fetch('https://api.github.com/gists/' + id + '/commits?per_page=30', {
+            headers: gistHeaders(token),
+            cache: 'reload',
+        })
+            .then(function (resp) { return resp.status === 200 ? resp.json() : null; })
+            .then(function (list) {
+                if (!Array.isArray(list) || !list.length) return;
+                var map = {};
+                for (var i = 0; i < list.length; i++) {
+                    var c = list[i];
+                    if (c && c.version && c.committed_at) map[c.committed_at] = c.version;
+                }
+                var h = readMirror();
+                var changed = false;
+                for (var k = 0; k < h.length; k++) {
+                    if (h[k].sha) continue;
+                    var d = parseTs(h[k].t);
+                    if (!d) continue;
+                    // committed_at 形如 2026-09-23T00:27:38Z（秒级）—— 对齐到秒、去掉毫秒再比
+                    var key = new Date(Math.floor(d.getTime() / 1000) * 1000)
+                        .toISOString().replace(/\.\d{3}Z$/, 'Z');
+                    if (map[key]) { h[k].sha = map[key]; changed = true; }
+                }
+                if (!changed) return;
+                writeMirror(h);
+                window.__wei8Sync.shaBackfilled = (window.__wei8Sync.shaBackfilled || 0) + 1;
+                renderServerStatus(token, id); // 重渲染一轮，灰行变成可点
+            })
+            .catch(function () { /* 拿不到就保持灰显 + 悬停说明原因，绝不静默失败 */ });
+    }
+
+    // ============ K) 按记录还原（v3.17，老板要求「能手动挑选哪个记录指定还原」） ============
+    // 语义（刻意这样定）：挑一条历史 → 把本机设置整包换成**那一版**的内容。
+    //   · 什么都不删：还原会在云端记成一次**新的**修订，旧版本依然可取回。
+    //     所以这是「回到那一版」，不是「销毁现在」。正因如此，还原后**允许**自动推送回云端 ——
+    //     否则别的设备永远看不到这次还原。
+    //   · 只接受带 linkgroups 的内容：缺它就说明那份不是完整的设置数据，宁可不动
+    //     （防止用一个空壳把现有设置清掉）。
+    //   · wei8SyncHistory 不还原进设置数据本体 —— 它是本层的记录，不是设置。
+    function removeRestoreConfirm() {
+        var old = document.getElementById('wei8-restore-confirm');
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+    }
+
+    // 确认条：不静默动数据，也不用 window.confirm（阻塞、且自动化探针点不到）。
+    // 观感沿用「覆盖本机 / 合并」那套行内二选一。
+    function showRestoreConfirm(item) {
+        var hist = document.getElementById('wei8-sync-hist');
+        if (!hist || !hist.parentNode) return;
+        removeRestoreConfirm();
+        var bar = document.createElement('div');
+        bar.id = 'wei8-restore-confirm';
+        bar.style.fontSize = '0.85em';
+        bar.style.lineHeight = '1.6';
+        bar.style.padding = '0.45em 0.6em';
+        bar.style.marginTop = '0.35em';
+        bar.style.border = '1px solid rgba(128,128,128,.35)';
+        bar.style.borderRadius = '6px';
+
+        var tip = document.createElement('div');
+        tip.textContent =
+            '把本机设置还原到 ' + item.ts + ' 那一版？当前设置会被它覆盖（云端会记成一次新的还原，旧版本仍可取回）。';
+        bar.appendChild(tip);
+
+        var row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '0.8em';
+        row.style.marginTop = '0.3em';
+        row.appendChild(mkBtn('确认还原', function () {
+            removeRestoreConfirm();
+            restoreRevision(item);
+        }));
+        row.appendChild(mkBtn('取消', removeRestoreConfirm));
+        bar.appendChild(row);
+        hist.parentNode.insertBefore(bar, hist.nextSibling);
+    }
+
+    function restoreRevision(item) {
+        var token = readLocal('gistToken');
+        var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
+        if (!token || !id) { toast('缺少令牌或 Gist，暂时无法还原。'); return; }
+        if (!item.sha) { toast('这一版拿不到云端版本号，无法还原。'); return; }
+        fetch('https://api.github.com/gists/' + id + '/' + item.sha, {
+            headers: gistHeaders(token),
+            cache: 'reload',
+        })
+            .then(function (resp) {
+                if (resp.status !== 200) { toast('这一版云端已不可取回（HTTP ' + resp.status + '）。'); return null; }
+                return resp.json();
+            })
+            .then(function (json) {
+                if (!json) return;
+                var f = Object.values(json.files || {})[0];
+                if (!f || typeof f.content !== 'string') { toast('这一版内容读不出来，已放弃还原。'); return; }
+                var data;
+                try { data = JSON.parse(f.content); } catch (e) { toast('这一版内容不是有效数据，已放弃还原。'); return; }
+                if (!data || typeof data !== 'object' || !data.linkgroups) {
+                    toast('这一版缺少必要结构，已放弃还原（避免把现有设置清掉）。');
+                    return;
+                }
+                delete data[HIST_FIELD]; // 记录本身不进设置数据
+                try {
+                    localStorage.setItem('bonjourr', JSON.stringify(data));
+                    logWrite('设置面板·还原到 ' + item.ts);
+                } catch (e) {
+                    toast('写入本机失败，未还原。');
+                    return;
+                }
+                window.__wei8Sync.restored = (window.__wei8Sync.restored || 0) + 1;
+                window.__wei8Sync.lastRestoreTs = item.ts;
+                // 允许自动推送把「还原后」的状态同步回云端（= 在历史上多记一条）。
+                // 这里刻意不抑制，否则别的设备永远看不到这次还原。
+                state.lastAutoKey = null;
+                globalThis.dispatchEvent(new Event('storage'));
+                toast('已还原到 ' + item.ts + ' 那一版。云端会把它记成一次新的还原。');
+                renderServerStatus(token, id);
+            })
+            .catch(function () { toast('还原失败：网络异常。'); });
     }
 
     // 校验令牌：返回 { ok, canWrite, code }
@@ -580,7 +822,10 @@
         //   本机可见性由镜像 localStorage['wei8-sync-history'] 承担。
         var payload = {};
         Object.keys(data).forEach(function (k) { payload[k] = data[k]; });
-        payload[HIST_FIELD] = recordHist('auto');
+        var histNow = recordHist('auto');
+        payload[HIST_FIELD] = histNow;
+        // 记住这次记录的时间戳：响应回来时要靠它认出「该把 sha 回填到哪一条」
+        var pushedT = histNow && histNow[0] ? histNow[0].t : null;
         var files = { 'bonjourr-export.json': { content: JSON.stringify(payload, undefined, 2) } };
         var description =
             'File automatically generated by Bonjourr. Learn more on https://bonjourr.fr/docs/settings-management/syncing/#github-gist';
@@ -600,9 +845,13 @@
         fetch(req.url, { method: req.method, headers: gistHeaders(token), body: req.body })
             .then(function (resp) {
                 if (resp.status === 200 || resp.status === 201) {
-                    var json = resp.status === 201 ? null : {};
-                    return (resp.status === 201 ? resp.json() : Promise.resolve(json)).then(function (j) {
+                    // v3.17：200(PATCH) 也要读响应体 —— 这次写入的修订号 history[0].version 就在里面，
+                    //   正是「按记录还原」要用的 sha。此前 200 分支刻意不读 body，于是永远拿不到 sha。
+                    //   （实测：连续 6 次 PATCH，响应 history[0].version 6/6 都有，且与 commits 端点一致。）
+                    return resp.json().catch(function () { return {}; }).then(function (j) {
+                        j = j || {};
                         var newId = resp.status === 201 ? j.id : id;
+                        attachSha(j.history && j.history[0] && j.history[0].version, pushedT);
                         // 首次新建成功后记住 id（上游 manual send 也会写，这里双保险）
                         try {
                             localStorage.setItem('gistId', String(newId));
@@ -714,6 +963,17 @@
         // 缺令牌/无 Gist 时 renderServerStatus 已写「等待认证」「尚无保存的数据」，这里不覆盖
     }
 
+    // 行内小按钮工厂（v3.17 提到顶层）：「覆盖本机 / 合并」「确认还原 / 取消」共用。
+    // ★ 动态创建的 button 必须显式 type="button"，否则点击会提交所在表单（上游设置面板是 <form>）。
+    function mkBtn(label, fn) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        b.style.cursor = 'pointer';
+        b.addEventListener('click', fn);
+        return b;
+    }
+
     function removeSyncPrompt() {
         var old = document.getElementById('wei8-sync-prompt');
         if (old && old.parentNode) old.parentNode.removeChild(old);
@@ -746,9 +1006,11 @@
         row.style.marginTop = '0.3em';
 
         // 写本机 + 刷新。suppressPush：覆盖后内容与服务器相同，置 lastAutoKey 抑制自动同步空推一遍。
-        function applyLocal(next, suppressPush) {
+        // by：写入留痕的标签（自检页展示「谁写的数据」），不影响行为。
+        function applyLocal(next, suppressPush, by) {
             try {
                 localStorage.setItem('bonjourr', JSON.stringify(next));
+                logWrite(by || 'sync-patch·写入本机');
                 if (suppressPush) state.lastAutoKey = stableHash(next);
                 window.__wei8Sync.pullCount = (window.__wei8Sync.pullCount || 0) + 1;
                 window.__wei8Sync.lastPullAt = Date.now();
@@ -761,17 +1023,8 @@
             renderServerStatus(readLocal('gistToken'), cleanId(readLocal('gistId')));
         }
 
-        function mkBtn(label, fn) {
-            var b = document.createElement('button');
-            b.type = 'button'; // 动态 button 必须显式 type="button"，否则点击会提交所在表单
-            b.textContent = label;
-            b.style.cursor = 'pointer';
-            b.addEventListener('click', fn);
-            return b;
-        }
-
         row.appendChild(mkBtn('覆盖本机', function () {
-            applyLocal(remote, true); // 服务器为准，整包替换
+            applyLocal(remote, true, '设置面板·覆盖本机'); // 服务器为准，整包替换
         }));
         row.appendChild(mkBtn('合并', function () {
             var localData = readSyncData() || {};
@@ -781,7 +1034,7 @@
                 if (k === HIST_FIELD) return; // 同步记录不进设置数据（v3.15）
                 if (!(k in localData)) merged[k] = remote[k]; // 只补：远端独有键进本机；共有键不动
             });
-            applyLocal(merged, false); // 并集随自动同步推回服务器
+            applyLocal(merged, false, '设置面板·合并'); // 并集随自动同步推回服务器
         }));
         bar.appendChild(row);
 
@@ -892,6 +1145,23 @@
         return false;
     }
 
+    // ============ I) 换版提示（v3.17） ============
+    // 为什么需要：SW 是「缓存优先秒开」，代价是**每次部署后首个打开的页面仍是旧壳**。
+    //   旧壳 = 旧的 index.html，连新版的 js 都还不会被请求 →「明明改了却不生效」。
+    //   v3.16 已经修掉「永久卡旧版」，但「落后一版」还在；不提示的话，老板只会以为功能没上线。
+    //   这也是「下载还原/上传备份 没生效」这类投诉最容易复发的来源。
+    // 怎么判：新 SW 接管旧页面时会触发 controllerchange。
+    //   ★ 只在「加载时就已有 controller」的前提下监听 —— 首次访问本来就没有 controller，
+    //     不过滤的话每次冷启动都会弹一次，变成骚扰。
+    // 为什么不做自动刷新：老板可能正在设置面板里改东西，页面突然重载会丢输入。给他点。
+    function watchVersionChange() {
+        if (!navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+            window.__wei8Sync.versionToasts++;
+            toast('页面已切到新版本，点此刷新以应用。', function () { location.reload(); });
+        });
+    }
+
     function bootCheck() {
         var token = readLocal('gistToken');
         var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
@@ -921,6 +1191,7 @@
                     //   会触发一轮自动推送，把「恢复」也记进历史，两台设备不再互相弹）
                     try {
                         localStorage.setItem('bonjourr', JSON.stringify(remote));
+                        logWrite('装载期·云端恢复（本机数据无效）');
                         globalThis.dispatchEvent(new Event('storage'));
                     } catch (e) { return; }
                     window.__wei8Sync.bootRestore = true;
@@ -948,5 +1219,7 @@
         watchSettingsOpen();
         // 装载期兜底：打开页面后台查一次（延迟 3s，错开首屏渲染与 SW 安装）
         setTimeout(bootCheck, 3000);
+        // 换版提示：本页可能还是旧壳，新版本刚接管时明确告诉老板（不是功能没上线）
+        watchVersionChange();
     });
 })();

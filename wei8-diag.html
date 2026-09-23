@@ -107,6 +107,15 @@
             <h2>我们自己的键</h2>
             <table id="t-ours"></table>
 
+            <h2>设置数据写入留痕</h2>
+            <p class="hint">
+                导航站里一共有 5 处会改写「设置数据」。每次改写都会往这里留一条（最近 10 条）——
+                如果出现「每次打开又变回默认」，看这张表就知道<strong>开机时到底有没有谁改写了数据、是哪一层</strong>。
+                空表 = 本次打开没有被任何一层改写；<br />
+                只看到 <code>preset·首次安装</code> = 浏览器把数据清空了，于是走了首次安装流程（这条基本就是定论）。
+            </p>
+            <table id="t-writes"></table>
+
             <h2>持久性实测（最关键的一步）</h2>
             <p class="hint">
                 点下面的按钮会写入一个临时标记，然后请你按 <code>F5</code> 刷新本页：
@@ -207,12 +216,46 @@
                 row(tO, '锁屏密码', get('wei8-lock-pass') ? yes('已改过（自定义密码）') : mid('未改过（用默认 2026）'));
                 row(tO, '免输窗口', get('wei8-settings-unlock') ? esc(get('wei8-settings-unlock')) : mid('无'));
                 var hist = get('wei8-sync-history');
-                var histN = 0;
-                if (hist) { try { var a = JSON.parse(hist); histN = Array.isArray(a) ? a.length : 0; } catch (e) {} }
+                var histN = 0, histSha = 0;
+                if (hist) {
+                    try {
+                        var a = JSON.parse(hist);
+                        if (Array.isArray(a)) {
+                            histN = a.length;
+                            for (var hi = 0; hi < a.length; hi++) {
+                                if (a[hi] && a[hi].sha) histSha++;
+                            }
+                        }
+                    } catch (e) {}
+                }
                 row(tO, '同步历史镜像', hist ? yes(histN + ' 条') : no('不存在'));
+                row(tO, '其中带版本号（可还原）',
+                    !hist ? mid('—') : mid(histSha + ' / ' + histN + ' 条'));
                 row(tO, '天气数据源配置', get('wei8-weather') ? yes('存在') : mid('未设置（用默认 open-meteo）'));
                 row(tO, '定位缓存', get('wei8-geo') ? yes('存在') : mid('无'));
                 row(tO, '上游天气缓存', get('lastWeather') ? yes('存在') : mid('无'));
+
+                // ---- 3.5) 设置数据写入留痕（v3.17） ----
+                // 这张表是回答「谁在开机时把数据改回去了」最直接的证据：写入者 + 时刻。
+                var tWr = document.getElementById('t-writes');
+                var wrRaw = get('wei8-writes');
+                var wrList = [];
+                if (wrRaw) {
+                    try { var wa = JSON.parse(wrRaw); if (Array.isArray(wa)) wrList = wa; } catch (e) {}
+                }
+                if (!wrList.length) {
+                    row(tWr, '本次记录', mid('（空）打开本页以来，没有任何一层改写设置数据'));
+                } else {
+                    for (var wi = 0; wi < wrList.length; wi++) {
+                        var w = wrList[wi] || {};
+                        var when = '?';
+                        if (w.at) {
+                            var wd = new Date(w.at);
+                            when = isNaN(wd.getTime()) ? String(w.at) : wd.toLocaleString('zh-CN');
+                        }
+                        row(tWr, wi === 0 ? '最近一次写入' : '更早', esc(when) + ' — ' + esc(String(w.by || '未知来源')));
+                    }
+                }
 
                 // 存储配额
                 if (navigator.storage && navigator.storage.estimate) {

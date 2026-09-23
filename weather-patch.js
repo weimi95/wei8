@@ -128,6 +128,29 @@
     var DEFAULT_COORDS = [24.874, 118.576];
 
     // ---------------------------------------------------------------------
+    // 数据本体写入留痕（v3.17）
+    //   全站只有 5 处会写 localStorage['bonjourr']，本文件占 2 处（下面两次定点迁移）。
+    //   每处写完往 `wei8-writes` 这个**独立小键**里记一条（最近 10 条，新→旧），
+    //   自检页 wei8-diag.html 会读出来展示 —— 老板报「每次打开又变回默认」时，
+    //   一眼就能看出「是不是有层在开机时把数据重写了、是哪一层写的」。
+    //   几个刻意的取舍：
+    //     · 不抽成公共函数/新文件：早期层（preset.js 在 main.js 之前）不能依赖别的文件，
+    //       一旦那个共享文件加载失败，预置本身也就废了。4 行小函数各留一份，
+    //       换来「任何一层单独挂掉都不影响其它层」——比新增一个全局中介安全。
+    //     · 绝不写进 `bonjourr` 自己（那会触发上游 storage 事件、再推一轮同步）；
+    //       写的是独立键，上游不认识、不会读。
+    //     · 留痕失败一律吞掉，不影响主流程。
+    // ---------------------------------------------------------------------
+    function logWrite(by) {
+        try {
+            var L = JSON.parse(localStorage.getItem('wei8-writes') || '[]');
+            if (!Array.isArray(L)) L = [];
+            L.unshift({ at: new Date().toISOString(), by: by });
+            localStorage.setItem('wei8-writes', JSON.stringify(L.slice(0, 10)));
+        } catch (e) { /* 留痕失败不影响迁移 */ }
+    }
+
+    // ---------------------------------------------------------------------
     // 一次性迁移：预置的「关闭定位 + 写死城市」-> 「自动 IP 定位」
     //
     // 为什么必须有这一步：geolocation='off' 时 request.ts:56-60 会把 city 当 query 发出去，
@@ -149,6 +172,7 @@
                 if (w && w.geolocation === 'off' && w.city === DEFAULT_CITY) {
                     w.geolocation = 'approximate';
                     localStorage.setItem('bonjourr', JSON.stringify(d));
+                    logWrite('weather-patch·迁移 geolocation');
                     log('迁移：geolocation off -> approximate（改为 IP 自动定位）');
                 }
             }
@@ -179,6 +203,7 @@
                 if (w && w.moreinfo === 'custom' && w.provider === OLD) {
                     w.provider = 'https://www.qweather.com/';
                     localStorage.setItem('bonjourr', JSON.stringify(d));
+                    logWrite('weather-patch·迁移 provider');
                     log('迁移：静态跳转 provider 中国天气网首页 -> 和风首页');
                 }
             }
