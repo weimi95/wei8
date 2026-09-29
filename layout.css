@@ -50,6 +50,16 @@
     column-gap: 0;
 }
 
+/* 隐藏设置面板「通知」组（更新信息 i_announce + 支持者 i_supporters_notif）。
+   老板要求去掉这两个开关。用 display:none 而非删 DOM：
+   main.js 对 i_announce（addEventListener change）与 i_supporters_notif（onclickdown）
+   有**无 null 守卫**的硬绑定（13240/13766/13769），删节点会让设置面板初始化抛错；
+   display:none 让元素留在 DOM、JS 绑定全活，零副作用、可回退。
+   该组内唯一的 <hr>（更新信息/支持者之间）随整组一起消失，无跨组分隔线孤留。 */
+#notifications_title {
+    display: none;
+}
+
 /* 时间：靠右，右边缘画竖线 */
 #time {
     justify-self: end;

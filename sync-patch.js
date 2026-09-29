@@ -413,7 +413,7 @@
     // 得点开才知道有几条）。
     // v3.17：表格每行变成**可点还原**（老板：「我其实想做成能手动挑选哪个记录指定还原」）。
     //   因此拆成两层：#wei8-sync-hist（容器：一行常驻提示 + 下面滚动列表）> #wei8-sync-hist-list。
-    //   拆两层是为了让「点一条可还原」这句提示**常驻不被滚走**；滚动高度仍固定 4.5em（≈3 行）。
+    //   拆两层是为了让「点一条可还原」这句提示**常驻不被滚走**；滚动高度固定 9.6em（≈6 行，v3.22 加高）。
     // 位置：插在 .wrapper 的**后面**（同为 .param 的直接子元素），**不进** wrapper ——
     // wrapper 是 flex + space-between，多塞一个子元素会把「同步 | 时间戳 | 按钮」撑散。
     function ensureHistEl() {
@@ -442,7 +442,7 @@
 
         var list = document.createElement('div');
         list.id = 'wei8-sync-hist-list';
-        list.style.maxHeight = '4.5em';   // ≈3 行，第 4 条起靠滚动条看
+        list.style.maxHeight = '9.6em';   // ≈6 行（v3.22：老板嫌 3 行显示不全，加高；第 7 条起靠滚动条看）
         list.style.overflowY = 'auto';
         list.style.overflowX = 'hidden';
         list.style.whiteSpace = 'nowrap';
