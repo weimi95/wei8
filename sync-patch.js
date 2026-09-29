@@ -15,14 +15,11 @@
  *      - 格式：`2026/0920/193205`（年/月日/时分秒，全数字、可排序、可肉眼比对）。
  *      - 取值：服务器 Gist 的 updated_at（= 最后一次同步时间），无 Gist 时显示「尚未同步」。
  *      - 不设 font-size：与同排标签保持同一排版尺度（v3.3 的教训）。
- *   E. 自动同步：监听上游 localStorage['bonjourr'] 变更事件（storage sync.set
- *      在 localstorage 模式下会 dispatchEvent(new Event('storage'))），当
- *      「有变更 + token 有效」时自动推送；首次（gistId 为空）自动 POST 建 Gist
- *      并记住返回的 id，之后 PATCH 更新同一条。
- *      · 推送**串行化**（同一时刻只允许一个在飞）：否则两份改动挨得近时，第二次
- *        会在第一次还没写回 id 时就发动，两边都走 POST → 每次改动都多建一条 Gist。
- *      · id 优先读 localStorage，回落到内存里的 __wei8Sync.gistId，双保险。
- *      · token 无效时降级为手动（不自动推），并在状态区提示。
+ *   E. ★ v3.21 已移除自动同步：不再监听 storage 事件、不再自动推送。
+ *      数据只在本机 localStorage；只有点「上传备份」才上云（上游自带 sendGist，
+ *      本层在 clickdown 捕获阶段把同步历史注入 bonjourr 一并带上），只有点「刷新」
+ *      才去问服务器拉时间戳与历史。理由：自动推送是「删了百度又回来」的元凶之一，
+ *      老板定调大道至简 —— 任何不由他主动点触发的云端同步都砍掉。
  *   F. 进设置时检查服务器版本（v3.11，老板定稿）：
  *      · 只在设置面板打开时检查一次，平时打开页面不碰服务器（本地缓存优先秒开）；
  *      · 服务器与本机数据不一致 → 弹「覆盖本机 / 合并」二选一（绝不静默覆盖）：
@@ -38,11 +35,9 @@
  *      · 分类（老板要求）：自动推送记 m:'auto'（显示「自动」）；手动点「发送」记
  *        m:'manual'（显示「手动」= 手动备份）。手动记录 8s 后随一次补推上云
  *        （上游 sendGist 先推数据本体，我们后补历史，串行不冲突）。
- *   H. 装载期云端兜底（v3.15）：打开页面后台查一次（cache:'reload'，不阻塞秒开）：
- *      · 本机数据无效（bonjourr 缺失/非法/无 linkgroups）→ 直接从云端拉回 + 提示；
- *      · 本机有效但与云端不一致 → 右下角小条提示「点此进设置处理」（不自动动本机）；
- *      · 一致/断网 → 完全安静。进设置时的检查（F）照旧。
- *      比对/合并一律把 `wei8SyncHistory` 排除在外 —— 它是本层的记录，不是设置数据。
+ *   H. ★ v3.21 已移除装载期云端兜底 bootCheck：打开页面不再自动拉云端、本机数据无效时
+ *      也不再整包从云端覆盖。代价是本机数据真丢了得手动点「下载还原」，但换来了
+ *      「没有任何自动通道能把删掉的链接复活」——这正是老板要的确定性。
  *   I. 换版提示（v3.17）：SW 是「缓存优先秒开」，代价是部署后**首个打开的页面仍是旧壳**，
  *      旧壳连新版 js 都不会请求 → 看着像「改了不生效」。新 SW 接管旧页面时会触发
  *      controllerchange，这时右下角提示「点此刷新」。只在加载时已有 controller 才监听，
@@ -154,9 +149,9 @@
         box.id = 'wei8-sync-hint';
 
         var tips = [
-            '首次使用：点「发送」会在你的 GitHub 自动建一个私有 Gist（不用自己去建）。',
+            '同步是手动的：改完点「上传备份」才上云；点「刷新」拉取服务器时间戳与历史记录。',
+            '首次使用点「上传备份」会在你的 GitHub 自动建一个私有 Gist（不用自己去建）。',
             'Token 需勾选 Gists 写权限：Account permissions → Gists → Read and write（classic token 则勾 gist）。',
-            '自动同步：本地数据一有改动、且令牌有效，就会自动推送到 Gist（「同步」右侧显示服务器那份的最后更新时间，便于判断哪份新）。',
         ];
         for (var i = 0; i < tips.length; i++) {
             var line = document.createElement('div');
@@ -186,7 +181,7 @@
     //   - 同步元信息    -> localStorage['gistId' / 'gistToken' / 'syncType' ...]
     //   上游每次 sync.set 在 localstorage 模式下会 `localStorage.bonjourr = ...`
     //   并 `dispatchEvent(new Event('storage'))`（main.js:1748-1749）。
-    //   这里靠监听该事件驱动自动同步，无需改上游。
+    //   v3.21 起本层不再监听该事件（不自动推送），只在老板主动点「上传备份」时借上游上传带上历史。
     //
     // 令牌校验：上游 isGistTokenValid 打 `GET /gists?since=...`，该端点
     //   allows_permissionless_access=true（细粒度 token 无 Gists 权限也 200），
@@ -196,14 +191,8 @@
     //     403 -> 令牌有效但缺 Gists 写权限（自动推送会 403，降级手动）
     // -----------------------------------------------------------------------
 
-    var state = {
-        lastLocalHash: null,
-        lastAutoKey: null,
-        pushTimer: null,
-        pushing: false, // 有推送在飞（串行化用，防并发 POST 各建一条 Gist）
-        queued: false,  // 在飞期间又来了改动，落地后补推
-        polling: false,
-    };
+    // v3.21：state 不再需要推送调度字段（已无自动推送/轮询/排队），保留最小结构。
+    var state = {};
 
     // ==================== G) 同步历史自维护（v3.15） ====================
     // 历史条目：{t: ISO字符串, m: 'auto'|'manual'}，新→旧，上限 HIST_MAX 条。
@@ -300,22 +289,28 @@
         } catch (e) { /* 回填失败不影响推送 */ }
     }
 
-    // 「下载/上传」是否被点到（preGuard 用；手动「上传备份」要记 manual 条目）
+    // 「下载/上传」是否被点到（preGuard，捕获阶段，先于上游 handler）：
+    //   v3.21 手动模式 —— 不再有任何自动推送。点「上传备份」（b_gistup）时做两件事：
+    //   ① 记一条 manual 历史到本地镜像；② 把历史注入 bonjourr 的顶层键 wei8SyncHistory，
+    //   让上游自带的 sendGist 在它那次上传里把历史一并带上云。
+    //   注入安全：v3.21 已无自动推送监听，注入不会触发「写→storage 事件→再推」的二次回路；
+    //   上游 verifyDataAsSync 会忽略未知顶层键，不影响解析。
     function preGuard(e) {
         if (!isSyncBtn(e.target)) {
             return;
         }
         window.__wei8Sync.hits++;
         cleanDirty();
-        // 手动备份：点「发送」（b_gistup）→ 记 manual；8s 后补推一次把记录带上云。
-        // （上游 sendGist 先推数据本体；我们这刀只补 wei8SyncHistory，串行不冲突。
-        //   若 8s 内自动推送已在飞/已排队，queued 机制会自然带上最新历史，无须再排。）
         if (e.target.closest && e.target.closest('#b_gistup')) {
             recordHist('manual');
             window.__wei8Sync.manualRecords = (window.__wei8Sync.manualRecords || 0) + 1;
-            if (!state.pushTimer) {
-                setTimeout(function () { autoPush(); }, 8000);
-            }
+            try {
+                var d = readSyncData();
+                if (d) {
+                    d[HIST_FIELD] = readMirror();
+                    localStorage.setItem('bonjourr', JSON.stringify(d));
+                }
+            } catch (e2) { /* 注入失败不影响上传本身 */ }
         }
     }
 
@@ -906,188 +901,32 @@
         return (v && v !== 'undefined' && v !== 'null' && v !== 'NaN') ? v : null;
     }
 
-    // 自动推送：首次（id 为空）POST 新建；否则 PATCH 更新
-    //
-    // ★ 必须串行化（state.pushing）：推送是「2s 去抖 + 一次到 GitHub 的往返」，
-    //   网络慢时一次要好几秒。若两份改动挨得近，第二个 autoPush 会在第一个还没写回
-    //   gistId 时就发动 —— 两边都读到「没有 id」，于是各自 POST 出一条新 Gist，
-    //   每次改动都多出一条（这个坑是 probe_sync.js 实机跑出来的，两次写入同一 POST 分支）。
-    //   串行化后：在飞时只置 queued，等落地再补推一次，那时 id 已经写好了 → 走 PATCH。
-    //
-    // ★ id 取值优先 localStorage，回落到我们自己在内存里记的 __wei8Sync.gistId：
-    //   即使上游某次写状态把 localStorage 的 gistId 覆盖掉，也不会退化成「又新建一条」。
-    function autoPush() {
-        if (state.pushing) {
-            state.queued = true;
-            return;
-        }
+    // ============ v3.21 手动刷新（取代原自动推送 / 60s 轮询 / 装载期兜底） ============
+    // 仅有的「主动问服务器」入口：点「刷新」按钮。无自动推送、无轮询、无装载期拉取，
+    // 页面打开不碰服务器，数据只在本机。渲染逻辑全部复用 renderServerStatus。
+    function refreshSync() {
         var token = readLocal('gistToken');
         var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
-        var data = readSyncData();
-        if (!token || !data) return;
-        // ★ 护栏（v3.15）：本地无有效数据绝不推 —— 否则空壳/默认数据会顶掉云端好数据。
-        //   linkgroups 是 preset 预置与真实数据共有的锚键；它缺失 = 本机数据不可信。
-        if (!data.linkgroups) {
-            window.__wei8Sync.lastError = '本机无有效设置数据，已跳过推送（避免覆盖云端备份）';
-            return;
-        }
-        state.pushing = true;
-
-        function done() {
-            state.pushing = false;
-            if (state.queued) {
-                state.queued = false;
-                autoPush();
-            }
-        }
-
-        // 上游的「默认数据不许发」护栏（对应 isStorageDefault）
-        // 这里简单判：同步数据等于默认（无用户改动）则不推。
-        // ★ v3.15：推送内容 = 数据本体 + wei8SyncHistory（本次推送先记 auto 条目再上云）。
-        //   历史只进 Gist content，不写回本地 bonjourr（否则触发 storage 事件再推一轮）；
-        //   本机可见性由镜像 localStorage['wei8-sync-history'] 承担。
-        var payload = {};
-        Object.keys(data).forEach(function (k) { payload[k] = data[k]; });
-        var histNow = recordHist('auto');
-        payload[HIST_FIELD] = histNow;
-        // 记住这次记录的时间戳：响应回来时要靠它认出「该把 sha 回填到哪一条」
-        var pushedT = histNow && histNow[0] ? histNow[0].t : null;
-        var files = { 'bonjourr-export.json': { content: JSON.stringify(payload, undefined, 2) } };
-        var description =
-            'File automatically generated by Bonjourr. Learn more on https://bonjourr.fr/docs/settings-management/syncing/#github-gist';
-
-        var req = id === null
-            ? {
-                method: 'POST',
-                url: 'https://api.github.com/gists',
-                body: JSON.stringify({ files: files, description: description, public: false }),
-            }
-            : {
-                method: 'PATCH',
-                url: 'https://api.github.com/gists/' + id,
-                body: JSON.stringify({ files: files, description: description }),
-            };
-
-        fetch(req.url, { method: req.method, headers: gistHeaders(token), body: req.body })
-            .then(function (resp) {
-                if (resp.status === 200 || resp.status === 201) {
-                    // v3.17：200(PATCH) 也要读响应体 —— 这次写入的修订号 history[0].version 就在里面，
-                    //   正是「按记录还原」要用的 sha。此前 200 分支刻意不读 body，于是永远拿不到 sha。
-                    //   （实测：连续 6 次 PATCH，响应 history[0].version 6/6 都有，且与 commits 端点一致。）
-                    return resp.json().catch(function () { return {}; }).then(function (j) {
-                        j = j || {};
-                        var newId = resp.status === 201 ? j.id : id;
-                        attachSha(j.history && j.history[0] && j.history[0].version, pushedT);
-                        // 首次新建成功后记住 id（上游 manual send 也会写，这里双保险）
-                        try {
-                            localStorage.setItem('gistId', String(newId));
-                        } catch (e) { /* ignore */ }
-                        window.__wei8Sync.gistId = newId;
-                        window.__wei8Sync.autoSynced++;
-                        window.__wei8Sync.lastAutoAt = Date.now();
-                        window.__wei8Sync.lastError = null;
-                        // 推送成功后刷新服务器时间戳
-                        renderServerStatus(token, newId);
-                        return j;
-                    });
-                }
-                if (resp.status === 401) {
-                    window.__wei8Sync.lastError = '401 令牌无效，已停止自动推送（改回手动「发送」）';
-                    window.__wei8Sync.tokenOk = false;
-                    return;
-                }
-                if (resp.status === 403) {
-                    window.__wei8Sync.lastError = '403 令牌缺 Gists 写权限（Account permissions → Gists → Read and write）';
-                    window.__wei8Sync.tokenOk = false;
-                    return;
-                }
-                if (resp.status === 404) {
-                    // ★ 404 自愈：gistId 悬空（服务器那份被删，例如在 GitHub 上手动删过、
-                    //   或换 token 后指到了别的账号）。旧逻辑只会报错卡死在「Gist 不存在」，
-                    //   老板真机就中过（时间戳一直「读取失败」）。
-                    //   正解：清掉失效 id → 排队补推。done() 会立刻再跑一次 autoPush，
-                    //   那时 id 为 null → 走 POST 重建 → 成功后写回新 id 并刷新时间戳。
-                    //   不会死循环：重建失败（401/403）会置 tokenOk 并停止，queued 只置这一次。
-                    try { localStorage.removeItem('gistId'); } catch (e) { /* ignore */ }
-                    window.__wei8Sync.gistId = null;
-                    window.__wei8Sync.lastError = '404 云端 Gist 已不存在，正在自动重建…';
-                    state.queued = true;
-                    return;
-                }
-                window.__wei8Sync.lastError = '推送失败 HTTP ' + resp.status;
-            })
-            .catch(function (err) {
-                window.__wei8Sync.lastError = '网络异常：' + (err && err.message ? err.message : String(err));
-            })
-            .then(done); // 无论成败都解除在飞标记；有排队就立刻补推一次
+        renderServerStatus(token, id); // 无 token 时 renderServerStatus 自己显示「未配置令牌」
     }
 
-    // 主监听：上游 localstorage 模式每次 sync.set 都会 dispatch `storage` 事件
-    // （main.js:1749）。同时兜底用 window 'storage'（跨标签页）。
-    function onStorage() {
-        // 只有同步模式 + 有令牌才自动推
-        var token = readLocal('gistToken');
-        if (!token) return;
-
-        // 去抖：同一份数据 2s 内不重复推
-        var data = readSyncData();
-        var key = stableHash(data);
-        if (key === state.lastAutoKey) return;
-        state.lastAutoKey = key;
-
-        if (state.pushTimer) clearTimeout(state.pushTimer);
-        state.pushTimer = setTimeout(function () {
-            autoPush();
-            state.pushTimer = null;
-        }, 2000);
+    // 「刷新」按钮：放进同步区块的按钮组（下载还原 / 上传备份 旁），常驻可见。
+    // 点它 = 主动问一次服务器，把时间戳主行 + 历史列表渲染出来（默认两者都隐藏）。
+    function addRefreshButton() {
+        var actions = document.getElementById('gist-sync-actions');
+        if (!actions || document.getElementById('b_sync_refresh')) return;
+        var btn = document.createElement('button');
+        btn.id = 'b_sync_refresh';
+        btn.className = 'param-btn';
+        btn.type = 'button';
+        btn.textContent = '刷新';
+        btn.addEventListener('click', refreshSync);
+        actions.appendChild(btn);
     }
 
-    // 轮询刷新「同步」行的最后更新时间
-    //   常态 60s 一次（够用且安静）；
-    //   但**首次渲染出来之前**改成 3s 快跑（最多 10 次）—— 覆盖三种真实场景：
-    //     ① 面板刚打开、DOM 才就位；② 用户刚提交令牌（localStorage 是后写的）；
-    //     ③ 自动化探针在页面加载后才注入令牌。
-    //   不这么做的话，这三种情况下时间戳要等满 60s 才出现，看起来像「功能没生效」。
-    function startPoll() {
-        if (state.polling) return;
-        state.polling = true;
-        var fast = 0;
-        function tick() {
-            var token = readLocal('gistToken');
-            var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
-            // 有令牌就渲染：没 id 时也要把「尚未同步」显示出来，否则「同步」右边一直空着
-            if (token) {
-                renderServerStatus(token, id);
-            }
-            var pending = window.__wei8Sync.lastTimeText === null && fast < 10;
-            if (pending) fast++;
-            setTimeout(tick, pending ? 3000 : 60000);
-        }
-        tick();
-    }
-
-    // ============ 进设置时检查服务器版本 + 「覆盖 / 合并」二选一 ============
-    // （2026-09-21 老板定稿：本地缓存优先秒开；不用每次打开页面都拉；进设置时检查一次；
-    //   服务器与本机不一致就弹提示让老板二选一，**绝不静默覆盖**。）
-    //
-    //   覆盖本机 = 整包换成服务器那份（服务器为准，本机独有改动丢弃；覆盖后抑制空推送）
-    //   合并     = 只补不改：服务器有、本机没有的顶层键补进来；两边都有的键保留本机
-    //              （合并后本机是「两边并集」，自动同步会把并集推回服务器）
-    //   断网     = 静默跳过，「Server status」行显示「离线中，当前用本机缓存」，本机缓存照常用
-    //
-    //   ★ 为什么「合并/覆盖」都安全：只在**顶层键**层面操作，绝不把远端缺键的本机数据删掉，
-    //     也不会触发上游 verifyDataAsSync 浅合并把嵌套块（move 布局/weather/…）重置成默认。
-    var lastPullStatus = null; // 'same' | 'prompt' | 'no-token' | 'no-id' | 'offline' | 'error'
-
-    // 断网/离线状态提示：挂在「Server status」行基节点；在线时由 renderServerStatus 刷新时间戳
-    function renderOfflineStatus() {
-        var base = document.getElementById('gist-sync-status-base');
-        if (!base) return;
-        if (lastPullStatus === 'offline') {
-            base.textContent = '离线中，当前用本机缓存';
-        }
-        // 缺令牌/无 Gist 时 renderServerStatus 已写「等待认证」「尚无保存的数据」，这里不覆盖
-    }
+    // ============ v3.21：进设置自动比对（覆盖/合并弹窗）已移除 ============
+    // 大道至简：不再自动 GET 服务器、不再弹「覆盖本机 / 合并」二选一。只有点「刷新」才拉一次，
+    // 且只展示时间戳与历史，绝不静默覆盖本机数据。mkBtn / removeSyncPrompt 保留给 K 段「按记录还原」。
 
     // 行内小按钮工厂（v3.17 提到顶层）：「覆盖本机 / 合并」「确认还原 / 取消」共用。
     // ★ 动态创建的 button 必须显式 type="button"，否则点击会提交所在表单（上游设置面板是 <form>）。
@@ -1105,140 +944,11 @@
         if (old && old.parentNode) old.parentNode.removeChild(old);
     }
 
-    // 弹「覆盖 / 合并」二选一。位置：同步区块内、提示文案（#wei8-sync-hint）下面。
-    function showSyncPrompt(remote, serverTs) {
-        var actions = document.getElementById('gist-sync-actions');
-        if (!actions || !actions.parentNode) return;
-        removeSyncPrompt();
-        var wrap = actions.parentNode; // .wrapper
-        var hint = document.getElementById('wei8-sync-hint');
+    // ============ v3.21：showSyncPrompt / autoPull / watchSettingsOpen 已移除（大道至简） ============
 
-        var bar = document.createElement('div');
-        bar.id = 'wei8-sync-prompt';
-        bar.style.fontSize = '0.85em';
-        bar.style.lineHeight = '1.6';
-        bar.style.padding = '0.45em 0.6em';
-        bar.style.marginTop = '0.4em';
-        bar.style.border = '1px solid rgba(128,128,128,.35)';
-        bar.style.borderRadius = '6px';
-
-        var tip = document.createElement('div');
-        tip.textContent = '检测到服务器版本与本机不一致（服务器时间：' + serverTs + '）';
-        bar.appendChild(tip);
-
-        var row = document.createElement('div');
-        row.style.display = 'flex';
-        row.style.gap = '0.8em';
-        row.style.marginTop = '0.3em';
-
-        // 写本机 + 刷新。suppressPush：覆盖后内容与服务器相同，置 lastAutoKey 抑制自动同步空推一遍。
-        // by：写入留痕的标签（自检页展示「谁写的数据」），不影响行为。
-        function applyLocal(next, suppressPush, by) {
-            try {
-                localStorage.setItem('bonjourr', JSON.stringify(next));
-                logWrite(by || 'sync-patch·写入本机');
-                if (suppressPush) state.lastAutoKey = stableHash(next);
-                window.__wei8Sync.pullCount = (window.__wei8Sync.pullCount || 0) + 1;
-                window.__wei8Sync.lastPullAt = Date.now();
-                window.__wei8Sync.lastError = null;
-                globalThis.dispatchEvent(new Event('storage')); // 驱动上游组件按新数据刷新
-            } catch (e) {
-                window.__wei8Sync.lastError = '写入本机失败：' + (e && e.message ? e.message : String(e));
-            }
-            removeSyncPrompt();
-            renderServerStatus(readLocal('gistToken'), cleanId(readLocal('gistId')));
-        }
-
-        row.appendChild(mkBtn('覆盖本机', function () {
-            applyLocal(remote, true, '设置面板·覆盖本机'); // 服务器为准，整包替换
-        }));
-        row.appendChild(mkBtn('合并', function () {
-            var localData = readSyncData() || {};
-            var merged = {};
-            Object.keys(localData).forEach(function (k) { merged[k] = localData[k]; }); // 本机全保留
-            Object.keys(remote).forEach(function (k) {
-                if (k === HIST_FIELD) return; // 同步记录不进设置数据（v3.15）
-                if (!(k in localData)) merged[k] = remote[k]; // 只补：远端独有键进本机；共有键不动
-            });
-            applyLocal(merged, false, '设置面板·合并'); // 并集随自动同步推回服务器
-        }));
-        bar.appendChild(row);
-
-        (hint || wrap).parentNode.insertBefore(bar, (hint || wrap).nextSibling);
-    }
-
-    // 检查服务器版本（只在进设置时被调用）：一致→安静退场；不一致→弹二选一；断网→离线提示
-    function autoPull() {
-        var token = readLocal('gistToken');
-        var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
-        if (!token || !id) {
-            lastPullStatus = !token ? 'no-token' : 'no-id';
-            window.__wei8Sync.lastPullStatus = lastPullStatus;
-            return;
-        }
-        // ★ cache:'reload' 必须带：GitHub API 的 GET 响应带 Cache-Control: max-age=60，
-        //   浏览器 HTTP 缓存会让这里拿到 1 分钟前的旧内容——「覆盖本机」就可能用旧数据盖新数据
-        //   （probe_sync.js 7.8 实测踩中：外部 PATCH 后 60s 内进设置，GET 还是补丁前的缓存）。
-        fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token), cache: 'reload' })
-            .then(function (resp) {
-                if (resp.status !== 200) { lastPullStatus = 'error'; return null; }
-                return resp.json();
-            })
-            .then(function (json) {
-                if (!json) { window.__wei8Sync.lastPullStatus = lastPullStatus; return; }
-                var content = Object.values(json.files || {})[0];
-                if (!content || typeof content.content !== 'string') { lastPullStatus = 'error'; return; }
-                var remote;
-                try { remote = JSON.parse(content.content); } catch (e) { lastPullStatus = 'error'; return; }
-                if (!remote || typeof remote !== 'object') { lastPullStatus = 'error'; return; }
-                var localData = readSyncData() || {};
-                // 逐键比对（本机没有的键 = 服务器多了；值不同 = 内容不一致）
-                // ★ wei8SyncHistory 是本层的同步记录，不是设置数据，比对时排除（v3.15）
-                var same = true;
-                var rk = Object.keys(remote);
-                for (var i = 0; i < rk.length; i++) {
-                    if (rk[i] === HIST_FIELD) continue;
-                    if (!(rk[i] in localData) ||
-                        stableHash(remote[rk[i]]) !== stableHash(localData[rk[i]])) { same = false; break; }
-                }
-                var serverTs = json.updated_at ? (fmtTs(parseTs(json.updated_at)) || '') : '';
-                if (same) {
-                    lastPullStatus = 'same'; // 一致：不打扰
-                } else {
-                    lastPullStatus = 'prompt';
-                    showSyncPrompt(remote, serverTs);
-                }
-                window.__wei8Sync.lastPullStatus = lastPullStatus;
-            })
-            .catch(function () {
-                lastPullStatus = 'offline';
-                window.__wei8Sync.lastPullStatus = 'offline';
-                renderOfflineStatus(); // 断网无副作用，本机缓存照常用
-            });
-    }
-
-    // 只在「设置面板打开」时检查（老板：不用每次打开页面都拉一次）。
-    // 上游打开面板 = aside#settings 加 shown 类，MutationObserver 盯 class 变化即可，不改上游。
-    function watchSettingsOpen() {
-        var aside = document.getElementById('settings');
-        if (!aside || typeof MutationObserver === 'undefined') return;
-        new MutationObserver(function () {
-            if (aside.classList.contains('shown')) autoPull();
-        }).observe(aside, { attributes: true, attributeFilter: ['class'] });
-    }
-
-    // 事件接入：上游在 sync.set 里 `globalThis.dispatchEvent(new Event('storage'))`
-    window.addEventListener('storage', onStorage);
-    // 上游是 `globalThis.dispatchEvent(new Event('storage'))` —— 即 window 上的原生 storage 事件
-    // （localstorage 模式下它不走跨标签页，但事件名仍是 'storage'，直接挂在 window 上即可捕获）
-
-    // ============ 装载期云端兜底（v3.15，H 段） ============
-    // 打开页面后台查一次（不阻塞秒开：GET 是异步的，UI 照常从本机缓存渲染）：
-    //   ① 本机数据无效（bonjourr 缺失/非法/无 linkgroups）→ 直接从云端拉回写本机，
-    //     省掉「本地丢了还得手动点得到」的坑（老板实测踩中）；
-    //   ② 本机有效但不一致 → 右下角小条提示（不自动动本机数据，v3.11 原则不变）；
-    //   ③ 一致 / 断网 / 没配 token → 完全安静。
-    // 比对与 F 段 autoPull 同规则：排除 wei8SyncHistory。
+    // ============ v3.21：装载期云端兜底 bootCheck / diffRemote 已移除（大道至简） ============
+    // 不再打开页面就查服务器、不再自动恢复/比对。只有点「刷新」才拉一次且仅展示。
+    // toast 保留：watchVersionChange（换版提示）与「按记录还原」仍会用到。
     function toast(msg, onclick) {
         var old = document.getElementById('wei8-sync-toast');
         if (old && old.parentNode) old.parentNode.removeChild(old);
@@ -1261,16 +971,6 @@
         }, 30000);
     }
 
-    function diffRemote(remote, localData) {
-        var rk = Object.keys(remote);
-        for (var i = 0; i < rk.length; i++) {
-            if (rk[i] === HIST_FIELD) continue;
-            if (!(rk[i] in localData) ||
-                stableHash(remote[rk[i]]) !== stableHash(localData[rk[i]])) return true;
-        }
-        return false;
-    }
-
     // ============ I) 换版提示（v3.17） ============
     // 为什么需要：SW 是「缓存优先秒开」，代价是**每次部署后首个打开的页面仍是旧壳**。
     //   旧壳 = 旧的 index.html，连新版的 js 都还不会被请求 →「明明改了却不生效」。
@@ -1288,64 +988,11 @@
         });
     }
 
-    function bootCheck() {
-        var token = readLocal('gistToken');
-        var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
-        if (!token || !id) return;
-        fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token), cache: 'reload' })
-            .then(function (resp) {
-                if (resp.status !== 200) return null;
-                return resp.json();
-            })
-            .then(function (json) {
-                if (!json) return;
-                var content = Object.values(json.files || {})[0];
-                if (!content || typeof content.content !== 'string') return;
-                var remote;
-                try { remote = JSON.parse(content.content); } catch (e) { return; }
-                if (!remote || typeof remote !== 'object') return;
-
-                // 远端历史落镜像：别的设备推的历史，本机也能立刻在表格里看到
-                if (Array.isArray(remote[HIST_FIELD])) {
-                    writeMirror(mergeHist(remote[HIST_FIELD]));
-                }
-
-                var localData = readSyncData();
-                var localValid = !!(localData && localData.linkgroups);
-                if (!localValid) {
-                    // ① 本机无效：直接恢复（写整包 + 驱动上游刷新；恢复动作本身
-                    //   会触发一轮自动推送，把「恢复」也记进历史，两台设备不再互相弹）
-                    try {
-                        localStorage.setItem('bonjourr', JSON.stringify(remote));
-                        logWrite('装载期·云端恢复（本机数据无效）');
-                        globalThis.dispatchEvent(new Event('storage'));
-                    } catch (e) { return; }
-                    window.__wei8Sync.bootRestore = true;
-                    toast('本机没有设置数据，已从云端备份恢复。', function () {
-                        document.dispatchEvent(new CustomEvent('toggle-settings'));
-                    });
-                    return;
-                }
-                if (diffRemote(remote, localData)) {
-                    // ② 不一致：只提示，不动本机（覆盖/合并仍走设置面板里的二选一）
-                    toast('云端备份与本机设置不一致，点此进设置处理。', function () {
-                        document.dispatchEvent(new CustomEvent('toggle-settings'));
-                    });
-                }
-            })
-            .catch(function () {
-                /* 断网/网络异常：完全安静，本机缓存照用 */
-            });
-    }
-
     document.addEventListener('DOMContentLoaded', function () {
-        // 时间戳轮询照旧（进设置 1s 后补刷一轮，覆盖面板 DOM 刚就位的时序）
-        setTimeout(function () { startPoll(); }, 1000);
-        // 版本检查只在面板真正打开时触发（不用每次打开页面都拉一次——老板定稿）
-        watchSettingsOpen();
-        // 装载期兜底：打开页面后台查一次（延迟 3s，错开首屏渲染与 SW 安装）
-        setTimeout(bootCheck, 3000);
-        // 换版提示：本页可能还是旧壳，新版本刚接管时明确告诉老板（不是功能没上线）
+        // v3.21 大道至简：打开页面不碰服务器、不轮询、不自动恢复。
+        // 仅保留手动入口：①「刷新」按钮（主动问一次服务器，展示时间戳与历史）
+        //   ② watchVersionChange 换版提示（SW 缓存优先导致落后一版的已知坑）
+        addRefreshButton();
         watchVersionChange();
     });
 })();

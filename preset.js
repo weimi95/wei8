@@ -131,7 +131,13 @@
                 cur = null;
             }
         }
-        var fresh = cur === null;
+        /* ★ v3.21：首次安装误判封堵。老判据 fresh = cur === null 会把「曾经装过、但本机数据
+           被上游 storage.sync.clear() 误清空」也当成首次安装 → 106 条预置全装回来（老板报的
+           「删了百度又回来」的第二条复活通道）。新判据：本机空 且（标记从没写过 或 数据损坏）。
+           · 标记存在 = 这台机器装过本站 → 即使 bonjourr 此刻是空的，也不重装预置，只保留已存的
+             分组结构，链接按「你删过的」处理（见下方 merge，snapshot 命中→keptOut，绝不补回）。
+           · 损坏（"undefined"/"null" 之类）仍当首次安装重装，沿用 v3.18 的兜底意图。 */
+        var fresh = cur === null && (markMissing || damaged !== '');
 
         /* ★ v3.19：合并式升级。老做法是「先 delete 掉自己那批、再整批写回」，于是老板
            **特意删掉**的预置书签每次换版都会复活（他报的现象：首页删了百度，Ctrl+F5 又出现）。
@@ -162,8 +168,8 @@
         var added = [];   // 本次补进去的（只可能是本版新增）
         var keptOut = 0;  // 你删掉的、本次刻意没补的
         var edited = 0;   // 你改过的、本次刻意没覆盖的
+        if (cur === null) cur = {};   // v3.21：非 fresh 的空壳（数据被误清空但装过）按空对象走，不再灌预置
         if (fresh) {
-            cur = {};
             Object.keys(CORE).forEach(function (k) { cur[k] = CORE[k]; });
         }
         Object.keys(LINKS).forEach(function (k) {
