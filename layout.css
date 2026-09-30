@@ -60,6 +60,20 @@
     display: none;
 }
 
+/* 放大设置面板「同步」区块的限高。
+   根因（2026-09-30 无头实测量出）：上游 style.css:1319 把 #gist-sync.shown 锁死
+   max-height:220px + 折叠机制的 overflow:hidden。塞进该区块的同步历史表
+   （#wei8-sync-hist，点「刷新」后展开，可视 12 行 ≈ 348px）比 220px 高，
+   被外层 overflow:hidden 裁到只剩顶部 1 条，list 内部 overflowY:auto 的
+   滚动条也一并被切掉 → 老板看到「只显示 1 条、滚不动」。
+   放大到 560px 容纳「同步行(~180px) + 历史表(348px)」，overflow:hidden 保留
+   （max-height 足够时不裁切；未点刷新时历史表 display:none，实际更矮，无副作用）。
+   layout.css 加载在 style.css 之后、同选择器 #gist-sync.shown 按层叠顺序胜出，无需 !important。
+   纯 CSS 覆盖，零 JS 改动、不碰同步闸门断言。 */
+#gist-sync.shown {
+    max-height: 560px;
+}
+
 /* 时间：靠右，右边缘画竖线 */
 #time {
     justify-self: end;
