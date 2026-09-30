@@ -404,6 +404,10 @@
         el.style.opacity = '0.7';
         el.style.marginLeft = '0.6em';
         el.style.marginRight = 'auto';
+        // v3.22：老板「下面有表格了，同步旁边的时间戳取消掉」—— 历史表里每条已带时间戳，
+        // 内联这条冗余。节点保留（探针/闸门按 id 取 DOM、setTimeText 仍写 lastTimeText），
+        // 但 display:none 不显示、不占「同步」行布局。
+        el.style.display = 'none';
         actions.parentNode.insertBefore(el, actions);
         return el;
     }
@@ -413,7 +417,7 @@
     // 得点开才知道有几条）。
     // v3.17：表格每行变成**可点还原**（老板：「我其实想做成能手动挑选哪个记录指定还原」）。
     //   因此拆成两层：#wei8-sync-hist（容器：一行常驻提示 + 下面滚动列表）> #wei8-sync-hist-list。
-    //   拆两层是为了让「点一条可还原」这句提示**常驻不被滚走**；滚动高度固定 16em（≈10 行，v3.22 加高）。
+    //   拆两层是为了让「点一条可还原」这句提示**常驻不被滚走**；滚动高度固定 20em（≈12 行，v3.22 加高）。
     // 位置：插在 .wrapper 的**后面**（同为 .param 的直接子元素），**不进** wrapper ——
     // wrapper 是 flex + space-between，多塞一个子元素会把「同步 | 时间戳 | 按钮」撑散。
     function ensureHistEl() {
@@ -427,11 +431,15 @@
         el = document.createElement('div');
         el.id = 'wei8-sync-hist';
         el.style.display = 'none';
-        el.style.fontSize = '0.76em';
-        el.style.lineHeight = '1.5';
-        el.style.opacity = '0.8';
-        el.style.marginTop = '2px';
-        el.style.padding = '2px 0 2px 4px';
+        // v3.22：老板嫌表格「很小、显示不全」—— 记录少时 maxHeight 是上限不生效，
+        // 真正决定观感的是字号/行距。0.76em 太小、行贴太紧，放大字号 + 行高，
+        // 再加 marginBottom 与下栏留白（别顶到「导入/导出」那行）。
+        el.style.fontSize = '0.9em';
+        el.style.lineHeight = '1.7';
+        el.style.opacity = '0.9';
+        el.style.marginTop = '4px';
+        el.style.marginBottom = '10px';
+        el.style.padding = '4px 0 4px 4px';
         el.style.borderTop = '1px solid rgba(128,128,128,.22)';
 
         var hint = document.createElement('div');
@@ -442,7 +450,7 @@
 
         var list = document.createElement('div');
         list.id = 'wei8-sync-hist-list';
-        list.style.maxHeight = '16em';   // ≈10 行（v3.22：老板嫌 6 行还小，加高；第 11 条起靠滚动条看）
+        list.style.maxHeight = '20em';   // ≈12 行（v3.22：老板「10 条以上再加滚动条」+ 嫌 16em 还小，加到 12 行；第 13 条起靠滚动条）
         list.style.overflowY = 'auto';
         list.style.overflowX = 'hidden';
         list.style.whiteSpace = 'nowrap';
@@ -491,7 +499,8 @@
         row.style.display = 'flex';
         row.style.justifyContent = 'space-between';
         row.style.gap = '1.2em';
-        row.style.padding = '0.05em 0';
+        // v3.22：行内边距放大（0.05em→0.28em），每条记录更舒展、2 条也占得住高度
+        row.style.padding = '0.28em 0';
         row.style.userSelect = 'none';       // v3.20：可点的行别在双击时顺手选中文字
 
         var time = document.createElement('span');
