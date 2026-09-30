@@ -201,6 +201,7 @@
     var HIST_MAX = 30; // 老板定稿：上限 30 条（Gist 单文件上限极宽松，30 条约 2KB）
     var HIST_KEY = 'wei8-sync-history';
     var HIST_FIELD = 'wei8SyncHistory'; // 数据本体里的顶层键名（比对/合并时必须排除）
+    var HIST_DEL_KEY = 'wei8-sync-history-deleted'; // 删除黑名单：被手动删除的同步记录 [{t,sha}]（存本机；防「云端那份被并回来又复活」）
 
     function readMirror() {
         try {
@@ -213,6 +214,31 @@
 
     function writeMirror(hist) {
         try { localStorage.setItem(HIST_KEY, JSON.stringify(hist)); } catch (e) { /* ignore */ }
+    }
+
+    // v3.23 删除：黑名单读写。存本机，随合并/推送不会「复活」——mergeHist 出口统一过滤。
+    function readDelList() {
+        try {
+            var a = JSON.parse(localStorage.getItem(HIST_DEL_KEY) || '[]');
+            return Array.isArray(a) ? a : [];
+        } catch (e) { return []; }
+    }
+    function isDeleted(entry) {
+        if (!entry) return false;
+        var del = readDelList();
+        for (var i = 0; i < del.length; i++) {
+            var d = del[i];
+            if (!d) continue;
+            if (entry.sha && d.sha && entry.sha === d.sha) return true;   // 修订号命中 = 铁证
+            if (!entry.sha && !d.sha && entry.t && d.t && entry.t === d.t) return true; // 都无 sha 才比 ISO
+        }
+        return false;
+    }
+    function markDeleted(entry) {
+        var del = readDelList();
+        del.push({ t: entry.t, sha: entry.sha || null });
+        del = del.slice(-HIST_MAX); // 黑名单也带上限，防止长期累积
+        try { localStorage.setItem(HIST_DEL_KEY, JSON.stringify(del)); } catch (e) { /* ignore */ }
     }
 
     // 从数据本体提取历史（bonjourr 键里可能带着「下载还原」时进来的那份）
@@ -245,7 +271,11 @@
         }
         order.sort(function (a, b) { return a < b ? 1 : -1; });
         var out = [];
-        for (var j = 0; j < order.length && out.length < HIST_MAX; j++) out.push(byT[order[j]]);
+        for (var j = 0; j < order.length && out.length < HIST_MAX; j++) {
+            var e2 = byT[order[j]];
+            if (isDeleted(e2)) continue;   // v3.23 删除黑名单：被手动删过的记录，云端那份并回来也一并滤掉
+            out.push(e2);
+        }
         return out;
     }
 
@@ -417,7 +447,7 @@
     // 得点开才知道有几条）。
     // v3.17：表格每行变成**可点还原**（老板：「我其实想做成能手动挑选哪个记录指定还原」）。
     //   因此拆成两层：#wei8-sync-hist（容器：一行常驻提示 + 下面滚动列表）> #wei8-sync-hist-list。
-    //   拆两层是为了让「点一条可还原」这句提示**常驻不被滚走**；滚动高度固定 20em（≈12 行，v3.22 加高）。
+    //   拆两层是为了让「点一条可还原」这句提示**常驻不被滚走**；滚动高度固定 60em（≈36 行，v3.22 老板嫌 12 行还小、再大 3 倍；HIST_MAX 才 30，等于全记录铺开不滚）。
     // 位置：插在 .wrapper 的**后面**（同为 .param 的直接子元素），**不进** wrapper ——
     // wrapper 是 flex + space-between，多塞一个子元素会把「同步 | 时间戳 | 按钮」撑散。
     function ensureHistEl() {
@@ -450,7 +480,7 @@
 
         var list = document.createElement('div');
         list.id = 'wei8-sync-hist-list';
-        list.style.maxHeight = '20em';   // ≈12 行（v3.22：老板「10 条以上再加滚动条」+ 嫌 16em 还小，加到 12 行；第 13 条起靠滚动条）
+        list.style.maxHeight = '60em';   // ≈36 行（v3.22 老板嫌 12 行还小、再大 3 倍；HIST_MAX 才 30 条，等于全记录铺开不滚）
         list.style.overflowY = 'auto';
         list.style.overflowX = 'hidden';
         list.style.whiteSpace = 'nowrap';
@@ -520,7 +550,7 @@
             row.setAttribute('data-restorable', '1');
             row.style.cursor = 'pointer';
             row.title = '点此把本机设置还原到 ' + item.ts + ' 那一版';
-            row.addEventListener('click', function () { showRestoreConfirm(item); });
+            row.addEventListener('click', function () { showRestoreConfirm(item, row); });
         } else {
             // v3.18：光靠悬停提示不够 —— 老板的反馈是「选中了某个记录，但根本没有还原的选项」。
             //   必须在行上**看得见**地写出为什么不能点，而不是让他以为功能没上线。
@@ -654,7 +684,7 @@
                         var it = merged[k];
                         var d = parseTs(it.t);
                         if (!d) continue;
-                        items.push({ ts: fmtTs(d), note: it.m === 'manual' ? '手动' : '自动', sha: it.sha || null });
+                        items.push({ ts: fmtTs(d), note: it.m === 'manual' ? '手动' : '自动', sha: it.sha || null, iso: it.t });
                     }
                     /* ★ v3.16：最新一条的真实时间 = Gist 的 updated_at。
                        recordHist 记的是「本地发起推送的时刻」，而主时间戳显示的是 GitHub 的
@@ -826,7 +856,8 @@
 
     // 确认条：不静默动数据，也不用 window.confirm（阻塞、且自动化探针点不到）。
     // 观感沿用「覆盖本机 / 合并」那套行内二选一。
-    function showRestoreConfirm(item) {
+    // row = 这一行记录的 DOM（删除成功后把它从表里移除；不传则重渲染）。
+    function showRestoreConfirm(item, row) {
         var bar = mkNoteBar('wei8-restore-confirm');
         if (!bar) return;
 
@@ -835,16 +866,45 @@
             '把本机设置还原到 ' + item.ts + ' 那一版？当前设置会被它覆盖（云端会记成一次新的还原，旧版本仍可取回）。';
         bar.appendChild(tip);
 
-        var row = document.createElement('div');
-        row.style.display = 'flex';
-        row.style.gap = '0.8em';
-        row.style.marginTop = '0.3em';
-        row.appendChild(mkBtn('确认还原', function () {
+        var row2 = document.createElement('div');
+        row2.style.display = 'flex';
+        row2.style.gap = '0.8em';
+        row2.style.marginTop = '0.3em';
+        row2.appendChild(mkBtn('确认还原', function () {
             removeRestoreConfirm();
             restoreRevision(item);
         }));
-        row.appendChild(mkBtn('取消', removeRestoreConfirm));
-        bar.appendChild(row);
+        row2.appendChild(mkBtn('取消', removeRestoreConfirm));
+        row2.appendChild(mkBtn('删除此记录', function () {
+            removeRestoreConfirm();
+            deleteHistoryRecord(item, row);
+        }));
+        bar.appendChild(row2);
+    }
+
+    // v3.23 删除：把一条同步记录从历史表里去掉。
+    //   数据是「本机镜像 ∪ 云端 Gist」合并（mergeHist），只删本机镜像那一条不够 ——
+    //   一刷新，云端那份又并回来复活（v3.19 预置「删掉的又回来」同款坑）。
+    //   所以：① 记进删除黑名单（mergeHist 出口统一过滤，云端再并回来也滤掉）；
+    //         ② 从本机镜像里删掉；③ 重新渲染表。
+    //   云端那份会在**下一次点「上传备份」**时随清过的镜像一并清干净（数据只在本机改，不额外发请求）。
+    function deleteHistoryRecord(item, row) {
+        if (!item || !item.ts) { toast('这条记录缺少时间，无法删除。'); return; }
+        var anchor = { t: item.iso || null, sha: item.sha || null };
+        // 镜像里存的是 {t,m,sha}；用锚点（iso+sha）匹配去掉
+        var mirror = readMirror().filter(function (e) { return !(e && (!anchor.sha || e.sha === anchor.sha) && (!anchor.t || e.t === anchor.t)); });
+        writeMirror(mirror);
+        markDeleted(anchor);
+        // 立即把这一行从当前渲染的表里移除（row 由确认条传入；没有就整体重渲）
+        if (row && row.parentNode) {
+            row.parentNode.removeChild(row);
+        }
+        var hist = document.getElementById('wei8-sync-hist');
+        var list = hist && hist.querySelector('#wei8-sync-hist-list');
+        if (list && !list.children.length) { hist.style.display = 'none'; }
+        window.__wei8Sync.deleted = (window.__wei8Sync.deleted || 0) + 1;
+        logWrite('设置面板·删除同步记录 ' + item.ts);
+        toast('已删除 ' + item.ts + ' 这条记录。下次「上传备份」会把它从云端一并清掉。');
     }
 
     function restoreRevision(item) {
