@@ -74,6 +74,24 @@
     max-height: 1200px;
 }
 
+/* ★ 2026-09-30 v3.24：上版只放大了内层 #gist-sync(1200px)，但它的**直接父级**
+   #settings-sync-options（class "as as_sync dropdown"，同步类型分组）被上游
+   .all .as_sync{max-height:280px}（style.css:1377）锁死 280px——外层先裁，
+   内层 1200px 白放。280px 恰好塞「同步行 + 历史表 2 条」，第 2 条被
+   overflow:hidden 切一半（老板无痕窗口实截图）。
+   无头量测 _measure_hist2.js（N=2）祖先链实锤：#gist-sync oH=cH=305（没裁），
+   裁切源是其父级 #settings-sync-options（280px）。
+   修复 = 用「展开态限定」选择器把外层 max-height 放大到 1400px：
+   展开判定 = 祖先 .all（#settings 面板 toggle .all，main.js:13977）。
+   为何必须带 .all 前缀：折叠态（无 .all）时本分组走 .dropdown{max-height:0}
+   正常收起；若写无类限定的 #settings-sync-options，#id 优先级会连折叠态
+   一起抬成 1400px，把收起的同步分组撑开占位（白改且伤布局）。
+   .all #settings-sync-options 优先级 (1,1,0) > .all .as_sync (0,2,0)（# 维 1>0），
+   展开态胜出、无需 !important；折叠态该规则不匹配、回落 0，零副作用。 */
+.all #settings-sync-options {
+    max-height: 1400px;
+}
+
 /* 时间：靠右，右边缘画竖线 */
 #time {
     justify-self: end;

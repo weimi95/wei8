@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.23</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.24</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,17 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.24</span><span class="date">2026-09-30</span>
+                    <ul class="changes">
+                        <li>
+                            <strong>同步历史表「2 条还切一半」真修了</strong>。上一版只放大了里层「同步」区块，
+                            它的外层分组（整个同步类型那一组）还被上游限死 280px 高——外层先裁，里层白放大，
+                            所以 2 条记录照样切一半。这次把外层分组限高一并放到 1400px，2 条（乃至 30 条）
+                            完整露出，不再被切。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.23</span><span class="date">2026-09-30</span>
                     <ul class="changes">
                         <li>
