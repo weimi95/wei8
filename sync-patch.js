@@ -204,10 +204,20 @@
     var HIST_DEL_KEY = 'wei8-sync-history-deleted'; // 删除黑名单：被手动删除的同步记录 [{t,sha}]（存本机；防「云端那份被并回来又复活」）
 
     // v3.25：把「本地同步配置」也纳入备份。这些键各存**独立** localStorage 键（不在 bonjourr 里），
-    // 所以上游「上传备份」只带 bonjourr 就漏了它们 —— 换台机器还原后令牌/同步类型全丢、得重填。
+    // 所以上游「上传备份」只带 bonjourr 就漏了它们 —— 换台机器还原后 gistId/同步类型全丢、得重填。
     // 现在：上传时随 bonjourr 打进顶层键 wei8Local；下载整包覆盖时从 wei8Local 回填到各自键。
+    //
+    // ★★ v3.26 安全修正：令牌**绝不进备份**。
+    //   v3.25 把 gistToken 明文打进数据体，GitHub 的 secret scanning 扫到后**主动撤销了令牌**
+    //   （邮件原文「Personal Access Token found in gist ... We have revoked it」）→ 老板的令牌
+    //   会反复失效，且换多少枚都一样。等于把钥匙挂在门上。
+    //   所以：备份里**只留非机密项**（gistId / syncType / distantUrl —— gistId 只是 URL 片段，
+    //   没有令牌根本访问不了），**剔掉 gistToken**。换机后只需手填一次令牌，其余自动还原。
     var LOCAL_BACKUP_FIELD = 'wei8Local'; // 数据本体里的顶层键（跟 wei8SyncHistory 一样，上游 verify 会忽略它）
-    var LOCAL_KEYS = ['gistToken', 'gistId', 'syncType', 'distantUrl']; // 本地层同步四件套
+    // 允许进备份的键（白名单制：新加键一律不进，避免再犯同样的错）
+    var LOCAL_KEYS = ['gistId', 'syncType', 'distantUrl'];
+    // ★ 明令禁止进备份的机密键。谁想加进备份，先想清楚 GitHub secret scanning 会不会撤令牌。
+    var LOCAL_SECRET_KEYS = ['gistToken'];
 
     function readMirror() {
         try {
@@ -338,13 +348,34 @@
         window.__wei8Sync.hits++;
         cleanDirty();
         if (e.target.closest && e.target.closest('#b_gistup')) {
+            // ★ v3.26 安全闸：上传前先扫整份数据有没有 GitHub 令牌明文。
+            //   位置必须在 recordHist / 计数 / 注入**之前** —— 检测到泄漏就整次操作作废，
+            //   一条历史都不记、计数器都不动、也不让上游发请求。
+            //   为什么这么严：GitHub 的 secret scanning 扫到 Gist 里的令牌明文会**撤销令牌**
+            //   （老板 2026-10-04 收到邮件：Personal Access Token found in gist, revoked），
+            //   令牌会反复失效、换多少枚都一样。宁可这次不上传，也不让它撤令牌。
+            var _leak = null;
+            try { _leak = findTokenLeak(readSyncData() || {}); } catch (e3) { _leak = null; }
+            if (_leak) {
+                toast('检测到设置数据里有 GitHub 令牌明文，已中止这次上传（否则 GitHub 会撤销你的令牌）。请开自检页排查：' + _leak);
+                logWrite('上传中止·数据含令牌明文');
+                return;
+            }
             recordHist('manual');
             window.__wei8Sync.manualRecords = (window.__wei8Sync.manualRecords || 0) + 1;
             try {
                 var d = readSyncData();
                 if (d) {
                     d[HIST_FIELD] = readMirror();
-                    d[LOCAL_BACKUP_FIELD] = readLocalBackup(); // v3.25：本地四件套随备份进云（换机可还原令牌/同步类型）
+                    d[LOCAL_BACKUP_FIELD] = readLocalBackup(); // v3.26：非机密同步配置随备份进云（**令牌已剔除**）
+                    // 白名单之外的兜底：注入后再扫一次（readLocalBackup 只收白名单键，这里是双保险）
+                    var leak = findTokenLeak(d);
+                    if (leak) {
+                        delete d[LOCAL_BACKUP_FIELD];
+                        toast('数据里有 GitHub 令牌明文，已中止上传（否则 GitHub 会撤销你的令牌）。');
+                        logWrite('上传中止·数据含令牌明文');
+                        return;
+                    }
                     localStorage.setItem('bonjourr', JSON.stringify(d));
                 }
             } catch (e2) { /* 注入失败不影响上传本身 */ }
@@ -393,25 +424,66 @@
     // v3.25：读本地同步四件套（只收非空值），供「上传备份」打进 Gist。
     // 这些键各存独立 localStorage 键（不在 bonjourr 里），上游 sendGist 只推 bonjourr
     // 就漏了它们——换机还原后令牌/同步类型全丢、得重填。打包进 wei8Local 让它们随备份走。
+    // v3.26：读「可进备份的本地同步配置」（白名单 = LOCAL_KEYS，**不含令牌**）。
+    // 只收非空值。令牌绝不在此列 —— GitHub secret scanning 扫到 Gist 里的令牌明文就撤令牌。
     function readLocalBackup() {
         var o = {};
         for (var i = 0; i < LOCAL_KEYS.length; i++) {
             var k = LOCAL_KEYS[i];
+            if (LOCAL_SECRET_KEYS.indexOf(k) >= 0) continue; // 双保险
             var v = readLocal(k);
             if (v !== null && v !== '') o[k] = v;
         }
         return o;
     }
 
-    // v3.25：从备份里的 wei8Local 回填本地四件套（下载整包覆盖时调用）。
+    // v3.26：上传前的令牌明文自检。返回泄漏位置说明（没泄漏则 null）。
+    // 匹配 GitHub 两代令牌的**真实**格式：
+    //   经典版   ghp_ + 36 位          （旧）
+    //   细粒度版  github_pat_ + 82 位   （新）
+    // 只扫「值」不扫「键名」，并且跳过本机自己的 gistToken（它本来就在 localStorage、
+    // 不在数据本体里，真出现了说明数据被污染了，那也要拦）。
+    // ★ 宁可误杀：多拦一次只是「这次没上传成」，漏拦一次是「老板的令牌被 GitHub 撤销」。
+    function findTokenLeak(obj) {
+        // ★ 测试钩子：探针要能**单独**验证两道防线（白名单 / 本函数）。
+        //   两道防线会互相掩护：白名单坏掉但本函数还在时，整次上传被拦掉，
+        //   外面看到的现象和「白名单正常」一模一样 —— 探针就测不出白名单单独失效。
+        //   探针把 globalThis.__wei8NoLeakGuard 置 true 就能临时关掉本函数、只留白名单。
+        //   正常使用时没人设这个标记。
+        if (globalThis.__wei8NoLeakGuard) return null;
+        var patterns = [
+            { name: '经典版令牌(ghp_)', re: /ghp_[A-Za-z0-9]{20,}/ },
+            { name: '细粒度令牌(github_pat_)', re: /github_pat_[A-Za-z0-9_]{20,}/ },
+        ];
+        try {
+            var hits = [];
+            JSON.stringify(obj, function (k, v) {
+                if (typeof v !== 'string' || !v) return v;
+                for (var i = 0; i < patterns.length; i++) {
+                    if (patterns[i].re.test(v)) { hits.push(k + '(' + patterns[i].name + ')'); break; }
+                }
+                return v;
+            });
+            return hits.length ? hits.join('、') : null;
+        } catch (e) {
+            return null; // 序列化异常不该拦住正常上传
+        }
+    }
+
+    // v3.25：从备份里的 wei8Local 回填本地配置（下载整包覆盖时调用）。
+    // ★ v3.26：即使旧备份里存过 gistToken，这里也**绝不回填**——那等于把一份可能已泄露的
+    //   凭据再塞回本机。换机后令牌由老板手填（在设置里填一次即可）。
     function applyLocalBackup(obj) {
         if (!obj || typeof obj !== 'object') return;
         for (var i = 0; i < LOCAL_KEYS.length; i++) {
             var k = LOCAL_KEYS[i];
+            if (LOCAL_SECRET_KEYS.indexOf(k) >= 0) continue; // 双保险：白名单里若混入机密键，在此再拦一道
             if (Object.prototype.hasOwnProperty.call(obj, k)) {
                 try { localStorage.setItem(k, obj[k]); } catch (e) { /* 写不进去不影响覆盖 */ }
             }
         }
+        // 云端若带过时的令牌字段，丢掉，别让人以为「备份里有令牌」是真的
+        try { delete obj.gistToken; } catch (e) { /* 只读对象，忽略 */ }
     }
 
     // 哈希：稳定序列化（键名排序 + 递归深度遍历），用来判断「数据是不是真的变了」。
@@ -1022,7 +1094,8 @@
     // 全在一个文件、还原就全覆盖」，所以拦截上游那次合并、改走整包覆盖：
     //   · 拿云端最新版 → 守卫（缺 linkgroups 就拒绝，防空壳把本机清空）
     //   · localStorage['bonjourr'] 直接换成云端那份（第 3 处写数据本体，台账已登记）
-    //   · 云端那份里打包的本地四件套（wei8Local）回填到各自键（令牌/同步类型跟着还原）
+    //   · 云端那份里打包的本地同步配置（wei8Local）回填到各自键
+    //   · ★ v3.26 令牌不回填（备份里根本没有令牌，见 LOCAL_SECRET_KEYS 的说明）
     //   · 云端历史落到本机镜像（下次「刷新」历史表完整）
     // 覆盖前弹二次确认（老板拍板：不可逆要确认）。覆盖后本机独有改动没了，只能靠历史表
     // 「按记录还原」找回旧版 —— 确认条里把这句讲清楚。
@@ -1059,7 +1132,7 @@
                 window.__wei8Sync.lastPullAt = Date.now();
                 window.__wei8Sync.lastPullStatus = 'overwrite';
                 globalThis.dispatchEvent(new Event('storage')); // 让上游重渲染
-                toast('已用云端那份整包覆盖本机设置（含令牌/同步类型）。删掉的就保持删掉，不会复活。');
+                toast('已用云端那份整包覆盖本机设置（gistId/同步类型已一并还原；令牌不会进备份，换机后需手填一次）。删掉的就保持删掉，不会复活。');
             })
             .catch(function () { toast('下载失败：网络异常。'); });
     }
