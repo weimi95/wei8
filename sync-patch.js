@@ -203,6 +203,12 @@
     var HIST_FIELD = 'wei8SyncHistory'; // 数据本体里的顶层键名（比对/合并时必须排除）
     var HIST_DEL_KEY = 'wei8-sync-history-deleted'; // 删除黑名单：被手动删除的同步记录 [{t,sha}]（存本机；防「云端那份被并回来又复活」）
 
+    // v3.25：把「本地同步配置」也纳入备份。这些键各存**独立** localStorage 键（不在 bonjourr 里），
+    // 所以上游「上传备份」只带 bonjourr 就漏了它们 —— 换台机器还原后令牌/同步类型全丢、得重填。
+    // 现在：上传时随 bonjourr 打进顶层键 wei8Local；下载整包覆盖时从 wei8Local 回填到各自键。
+    var LOCAL_BACKUP_FIELD = 'wei8Local'; // 数据本体里的顶层键（跟 wei8SyncHistory 一样，上游 verify 会忽略它）
+    var LOCAL_KEYS = ['gistToken', 'gistId', 'syncType', 'distantUrl']; // 本地层同步四件套
+
     function readMirror() {
         try {
             var arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
@@ -338,14 +344,30 @@
                 var d = readSyncData();
                 if (d) {
                     d[HIST_FIELD] = readMirror();
+                    d[LOCAL_BACKUP_FIELD] = readLocalBackup(); // v3.25：本地四件套随备份进云（换机可还原令牌/同步类型）
                     localStorage.setItem('bonjourr', JSON.stringify(d));
                 }
             } catch (e2) { /* 注入失败不影响上传本身 */ }
+        }
+        // v3.25：点「下载还原」—— 在捕获阶段掐掉上游那次「合并下载」（上游本地模式是顶层键取并集，
+        // 删掉的东西会复活），改走我们自己的「整包覆盖 + 二次确认」。stopPropagation 让下游
+        // clickdown 库绑在按钮上的 pointerdown/keydown 监听（downEvent）不再执行、isFast 不置位。
+        if (e.target.closest && e.target.closest('#b_gistdown')) {
+            e.stopPropagation();
         }
     }
 
     document.addEventListener('pointerdown', preGuard, true);
     document.addEventListener('keydown', preGuard, true);
+    // v3.25：click 也在捕获阶段拦一次（双重保险：即使某路径 isFast 没置位，下游 clickEvent 也不会跑）。
+    // 确认条在 click 捕获阶段弹（鼠标 pointerdown+click、键盘 keydown+合成 click 各来一次，
+    // 只在 click 弹一次，避免双弹）。
+    document.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('#b_gistdown')) {
+            e.stopPropagation();
+            showDownloadOverwriteConfirm();
+        }
+    }, true);
 
     // 读一个键（容错）
     function readLocal(key) {
@@ -365,6 +387,30 @@
             return o && typeof o === 'object' ? o : null;
         } catch (e) {
             return null;
+        }
+    }
+
+    // v3.25：读本地同步四件套（只收非空值），供「上传备份」打进 Gist。
+    // 这些键各存独立 localStorage 键（不在 bonjourr 里），上游 sendGist 只推 bonjourr
+    // 就漏了它们——换机还原后令牌/同步类型全丢、得重填。打包进 wei8Local 让它们随备份走。
+    function readLocalBackup() {
+        var o = {};
+        for (var i = 0; i < LOCAL_KEYS.length; i++) {
+            var k = LOCAL_KEYS[i];
+            var v = readLocal(k);
+            if (v !== null && v !== '') o[k] = v;
+        }
+        return o;
+    }
+
+    // v3.25：从备份里的 wei8Local 回填本地四件套（下载整包覆盖时调用）。
+    function applyLocalBackup(obj) {
+        if (!obj || typeof obj !== 'object') return;
+        for (var i = 0; i < LOCAL_KEYS.length; i++) {
+            var k = LOCAL_KEYS[i];
+            if (Object.prototype.hasOwnProperty.call(obj, k)) {
+                try { localStorage.setItem(k, obj[k]); } catch (e) { /* 写不进去不影响覆盖 */ }
+            }
         }
     }
 
@@ -968,6 +1014,111 @@
     // 把「被上游序列化残渣」的 id 归一成 null/真值，三处都要用，抽出来
     function cleanId(v) {
         return (v && v !== 'undefined' && v !== 'null' && v !== 'NaN') ? v : null;
+    }
+
+    // ============ v3.25 下载整包覆盖（取代上游的「合并下载」） ============
+    // 上游本地模式的「下载还原」是**顶层键取并集**（main.js:1744）—— 你删掉的东西只要云端
+    // 那份还留着（或另一台没删），一还原就并回来复活。老板要的是「删掉的就保持删掉、
+    // 全在一个文件、还原就全覆盖」，所以拦截上游那次合并、改走整包覆盖：
+    //   · 拿云端最新版 → 守卫（缺 linkgroups 就拒绝，防空壳把本机清空）
+    //   · localStorage['bonjourr'] 直接换成云端那份（第 3 处写数据本体，台账已登记）
+    //   · 云端那份里打包的本地四件套（wei8Local）回填到各自键（令牌/同步类型跟着还原）
+    //   · 云端历史落到本机镜像（下次「刷新」历史表完整）
+    // 覆盖前弹二次确认（老板拍板：不可逆要确认）。覆盖后本机独有改动没了，只能靠历史表
+    // 「按记录还原」找回旧版 —— 确认条里把这句讲清楚。
+    function downloadOverwrite() {
+        var token = readLocal('gistToken');
+        var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
+        if (!token || !id) { toast('缺少令牌或 Gist，无法下载还原。'); return; }
+        fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token), cache: 'reload' })
+            .then(function (resp) {
+                if (resp.status !== 200) { toast('云端取不到（HTTP ' + resp.status + '）。'); return null; }
+                return resp.json();
+            })
+            .then(function (json) {
+                if (!json) return;
+                var f = Object.values(json.files || {})[0];
+                if (!f || typeof f.content !== 'string') { toast('云端内容读不出来，已放弃。'); return; }
+                var data;
+                try { data = JSON.parse(f.content); } catch (e) { toast('云端不是有效数据，已放弃。'); return; }
+                if (!data || typeof data !== 'object' || !data.linkgroups) {
+                    toast('云端缺必要结构（linkgroups），已放弃（避免把本机清空）。'); return;
+                }
+                // 本地四件套先取出（覆盖后回填）；历史字段取出（落到本机镜像）
+                var backup = data[LOCAL_BACKUP_FIELD] || {};
+                var cloudHist = Array.isArray(data[HIST_FIELD]) ? data[HIST_FIELD] : null;
+                delete data[LOCAL_BACKUP_FIELD]; // 辅助键不进设置数据本体
+                // 整包覆盖（第 3 处写 localStorage['bonjourr']）
+                try {
+                    localStorage.setItem('bonjourr', JSON.stringify(data));
+                    logWrite('设置面板·下载整包覆盖');
+                } catch (e) { toast('写入本机失败，未覆盖。'); return; }
+                applyLocalBackup(backup);          // 令牌/同步类型等跟着还原
+                if (cloudHist) writeMirror(cloudHist); // 云端历史落本机镜像
+                window.__wei8Sync.pullCount = (window.__wei8Sync.pullCount || 0) + 1;
+                window.__wei8Sync.lastPullAt = Date.now();
+                window.__wei8Sync.lastPullStatus = 'overwrite';
+                globalThis.dispatchEvent(new Event('storage')); // 让上游重渲染
+                toast('已用云端那份整包覆盖本机设置（含令牌/同步类型）。删掉的就保持删掉，不会复活。');
+            })
+            .catch(function () { toast('下载失败：网络异常。'); });
+    }
+
+    function removeDownloadConfirm() {
+        var o = document.getElementById('wei8-download-confirm');
+        if (o && o.parentNode) o.parentNode.removeChild(o);
+    }
+
+    // v3.25：下载确认条的专用挂载条。
+    // ★ 不能复用 mkNoteBar —— 它第一行就要求 #wei8-sync-hist（历史表）存在，而 v3.21 起
+    //   历史表是「懒创建」（只有点过「刷新」才有）。老板第一次点「下载还原」时历史表还不存在，
+    //   mkNoteBar 直接 return null → 确认条永远弹不出来、下载按钮彻底卡死（实测复现）。
+    //   所以这里自己找挂载点：优先挂在按钮组 #gist-sync-actions 之后（视觉上紧跟被点的按钮），
+    //   退而求其次挂到 #gist-sync 同步区块内，都没有就退回设置面板。
+    function downloadConfirmHost() {
+        var actions = document.getElementById('gist-sync-actions');
+        if (actions && actions.parentNode) return { node: actions, after: true };
+        var syncBlock = document.getElementById('gist-sync');
+        if (syncBlock) return { node: syncBlock, after: false };
+        var opts = document.getElementById('settings-sync-options');
+        if (opts) return { node: opts, after: false };
+        return null;
+    }
+
+    function showDownloadOverwriteConfirm() {
+        removeDownloadConfirm();
+        var host = downloadConfirmHost();
+        if (!host) return;
+        var bar = document.createElement('div');
+        bar.id = 'wei8-download-confirm';
+        bar.style.fontSize = '0.85em';
+        bar.style.lineHeight = '1.6';
+        bar.style.padding = '0.45em 0.6em';
+        bar.style.marginTop = '0.35em';
+        bar.style.border = '1px solid rgba(128,128,128,.35)';
+        bar.style.borderLeftWidth = '3px';
+        bar.style.borderLeftStyle = 'solid';
+        bar.style.borderLeftColor = 'rgb(var(--accent-color, 41 144 255))';
+        bar.style.borderRadius = '6px';
+        bar.style.background = 'rgba(128,128,128,.10)';
+        if (host.after) host.node.parentNode.insertBefore(bar, host.node.nextSibling);
+        else host.node.appendChild(bar);
+        try { bar.scrollIntoView({ block: 'center' }); } catch (e) { /* 老浏览器不支持就跳过 */ }
+        var tip = document.createElement('div');
+        tip.textContent =
+            '用云端那份「整包覆盖」本机设置？本机独有的改动会被清掉（你删掉的东西保持删掉、不会复活）。' +
+            '覆盖后想找回旧版，只能靠下面历史表「按记录还原」。';
+        bar.appendChild(tip);
+        var row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '0.8em';
+        row.style.marginTop = '0.3em';
+        row.appendChild(mkBtn('确认覆盖', function () {
+            removeDownloadConfirm();
+            downloadOverwrite();
+        }));
+        row.appendChild(mkBtn('取消', removeDownloadConfirm));
+        bar.appendChild(row);
     }
 
     // ============ v3.21 手动刷新（取代原自动推送 / 60s 轮询 / 装载期兜底） ============
