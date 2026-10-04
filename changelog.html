@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.26</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.28</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,39 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.28</span><span class="date">2026-10-04</span>
+                    <ul class="changes">
+                        <li>
+                            <strong>修「点上传备份没反应」</strong>。上一版为了不让令牌混进备份，
+                            做成了「一检测到令牌就中止这次上传」——结果你的数据里本来就带着令牌字段，
+                            于是<strong>每次点上传都被拦</strong>、功能整个用不了。这是我想错了：
+                            备份里不该有令牌，但正确的做法是<strong>把令牌剔掉再上传</strong>，
+                            而不是拒绝干活。
+                        </li>
+                        <li>
+                            <strong>现在的行为</strong>：点「上传备份」照常上传，只是自动把令牌字段
+                            从备份里<strong>悄悄摘掉</strong>（也会顺手从你本机数据里清掉，以后不再重复出现），
+                            并弹一句话告诉你摘了什么。这样既不会把令牌交到云端、
+                            也不会再被 GitHub 撤销令牌，上传功能也不再被卡。
+                        </li>
+                    </ul>
+                </li>
+                <li>
+                    <span class="ver">v3.27</span><span class="date">2026-10-04</span>
+                    <ul class="changes">
+                        <li>
+                            <strong>「每次打开都看到旧版（页脚的『法国制造』等）」根治了</strong>。
+                            那三样东西 v3.22 就已经删掉了，你却一直看到——原因是页面本身
+                            <strong>是唯一没有版本号的文件</strong>，被离线缓存「优先拿旧的」卡住了，
+                            刷新多少次都会读到首次缓存的那份。
+                        </li>
+                        <li>
+                            <strong>现在打开页面会优先取新版本</strong>，不用再手动强刷、也不用清缓存；
+                            断网时仍能用缓存，离线可用不受影响。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.26</span><span class="date">2026-10-04</span>
                     <ul class="changes">
                         <li>
