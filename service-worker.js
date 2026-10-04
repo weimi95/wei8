@@ -1,10 +1,12 @@
 // 由 build_bonjourr.js 生成。
 // Bonjourr 的 main.js 会 navigator.serviceWorker.register("service-worker.js")（相对文档 -> 本文件）。
-// 策略（v2，缓存优先 = 秒开）：同源 GET 有缓存就**立刻回缓存**（不等网络，弱网/断网都秒开），
-// 同时后台拉网络刷新缓存（stale-while-revalidate）。无缓存才走网络，失败再兜底。
-// 代价：每次部署后首个打开可能是旧壳（后台已刷好，下次打开就是新的），最多落后一版。
+// 策略（v3）：**导航请求网络优先**（换部署后第一次打开就是新版，不再卡旧壳）+ 其余同源 GET 缓存优先（秒开）。
+//   导航 = 打开页面/刷新：先走网络拿新的，成功就顺手刷缓存；断网才回落缓存（旧壳也比打不开强）。
+//   其余资源（js/css/图片…）都带 ?v=N，缓存优先；命中即回并后台刷新。
+//   ★ 为什么导航要特殊：index.html 是唯一**不带版本号**的本机资源，靠「改 ?v= 破缓存」对它无效，
+//   统一「缓存优先」会永远命中首次写入的旧壳（2026-10-04 老板实机踩中，一直看到已删掉的「法国制造」页脚）。
 // 作用域是 /wei8/，与任何父级作用域的 SW 互不干涉（同作用域只能有一个 SW）。
-var CACHE = 'wei8-bonjourr-v6';
+var CACHE = 'wei8-bonjourr-v7';
 var PREFIX = 'wei8-bonjourr-';
 
 self.addEventListener('install', function () {
@@ -28,6 +30,28 @@ self.addEventListener('fetch', function (event) {
     if (new URL(req.url).origin !== self.location.origin) return;
 
     event.respondWith(
+        // ⓪ ★ v3.27 导航请求（打开页面/刷新）走**网络优先**。
+        //   为什么：index.html 是**唯一不带版本号**的本机资源（所有 js/css 都带 ?v=N，靠改版本号破缓存），
+        //   下面 ① 的「精确匹配 + 缓存优先」对无版本号的 URL 永远命中**首次写入**的那份 → 换部署后
+        //   永远读到旧壳。2026-10-04 老板实机踩中：v3.22 明明已把「法国制造/支持Bonjourr/版本号行」
+        //   从页脚删掉了，正常窗口却一直显示那三样（旧壳），无痕窗口（无 SW 缓存）才显示新的。
+        //   代价：打开页面那一下要走网络（本地/CN 到 GitHub Pages 通常几十毫秒，感知不到）。
+        //   收益：**换版后第一次打开就是新版**，不必强刷、不必手动清缓存。
+        //   断网时仍回落到缓存（旧壳也比打不开强），所以「离线可用」不受影响。
+        if (req.mode === 'navigate') {
+            return fetch(req).then(function (res) {
+                if (res && res.status === 200 && res.type === 'basic') {
+                    var clone = res.clone();
+                    caches.open(CACHE).then(function (c) { c.put(req, clone); });
+                }
+                return res;
+            }).catch(function () {
+                return caches.match(req, { ignoreSearch: true }).then(function (fb) {
+                    return fb || caches.match('./index.html', { ignoreSearch: true })
+                        || new Response('', { status: 504, statusText: 'wei8 offline: not cached' });
+                });
+            });
+        }
         // ① 精确匹配（含查询串）：产物资源都带 ?v=N，换版后请求新的 ?v 必定 miss -> 一定走网络拿新文件。
         //    ★★ 这里绝不能带 ignoreSearch。原因：caches.match 在 ignoreSearch 下会匹配到**更早写入**的
         //       同路径旧条目（?v=8）并「立刻返回」，新内容虽然也被抓进了缓存，却永远轮不到它 ->
