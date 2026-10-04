@@ -348,37 +348,33 @@
         window.__wei8Sync.hits++;
         cleanDirty();
         if (e.target.closest && e.target.closest('#b_gistup')) {
-            // ★ v3.26 安全闸：上传前先扫整份数据有没有 GitHub 令牌明文。
-            //   位置必须在 recordHist / 计数 / 注入**之前** —— 检测到泄漏就整次操作作废，
-            //   一条历史都不记、计数器都不动、也不让上游发请求。
-            //   为什么这么严：GitHub 的 secret scanning 扫到 Gist 里的令牌明文会**撤销令牌**
-            //   （老板 2026-10-04 收到邮件：Personal Access Token found in gist, revoked），
-            //   令牌会反复失效、换多少枚都一样。宁可这次不上传，也不让它撤令牌。
-            var _leak = null;
-            try { _leak = findTokenLeak(readSyncData() || {}); } catch (e3) { _leak = null; }
-            if (_leak) {
-                toast('检测到设置数据里有 GitHub 令牌明文，已中止这次上传（否则 GitHub 会撤销你的令牌）。请开自检页排查：' + _leak);
-                logWrite('上传中止·数据含令牌明文');
-                return;
-            }
+            // ★ v3.28：上传前**就地剔除**数据里的令牌明文，然后照常上传。
+            //   v3.26 这里是「检出就 return 中止整次上传」—— 那是设计错误：老板的 bonjourr 里
+            //   本来就带 gistToken 字段，于是**点一次「上传备份」就被拦一次**、功能整个堵死
+            //   （老板 15:38 报「现在不能上传备份了」并指出「上传备份那边就不要带令牌呀」）。
+            //   老板的判断是对的：备份里根本不该带令牌，**剔掉再传**就行，不该拒绝服务。
+            //   为什么必须剔：GitHub secret scanning 扫到 Gist 里的令牌明文会**撤销令牌**
+            //   （老板 2026-10-04 收到邮件：Personal Access Token found in gist, revoked）。
+            //   为什么不能「无脑上传」：会把凭据交到云端。
+            var _stripped = [];
             recordHist('manual');
             window.__wei8Sync.manualRecords = (window.__wei8Sync.manualRecords || 0) + 1;
             try {
                 var d = readSyncData();
                 if (d) {
                     d[HIST_FIELD] = readMirror();
-                    d[LOCAL_BACKUP_FIELD] = readLocalBackup(); // v3.26：非机密同步配置随备份进云（**令牌已剔除**）
-                    // 白名单之外的兜底：注入后再扫一次（readLocalBackup 只收白名单键，这里是双保险）
-                    var leak = findTokenLeak(d);
-                    if (leak) {
-                        delete d[LOCAL_BACKUP_FIELD];
-                        toast('数据里有 GitHub 令牌明文，已中止上传（否则 GitHub 会撤销你的令牌）。');
-                        logWrite('上传中止·数据含令牌明文');
-                        return;
-                    }
+                    d[LOCAL_BACKUP_FIELD] = readLocalBackup(); // 非机密同步配置随备份进云（白名单里本就没有令牌）
+                    // 剔除数据里任何令牌明文（顶层 + 一层嵌套），**然后照常上传**。
+                    // 这一次 setItem 同时完成两件事：把剔除结果写回本机（下次不再触发）+ 供上游上传。
+                    _stripped = stripTokenLeak(d);
                     localStorage.setItem('bonjourr', JSON.stringify(d));
                 }
             } catch (e2) { /* 注入失败不影响上传本身 */ }
+            if (_stripped.length) {
+                // 提示但不阻断：告诉老板「已经帮你剔掉了，这样 GitHub 就不会撤你令牌」
+                logWrite('上传前剔除令牌字段·' + _stripped.join(','));
+                toast('备份里带了令牌字段（' + _stripped.join('、') + '），已自动剔除后再上传——GitHub 扫到令牌会撤销它，所以绝不能带上。');
+            }
         }
         // v3.25：点「下载还原」—— 在捕获阶段掐掉上游那次「合并下载」（上游本地模式是顶层键取并集，
         // 删掉的东西会复活），改走我们自己的「整包覆盖 + 二次确认」。stopPropagation 让下游
@@ -444,30 +440,47 @@
     // 只扫「值」不扫「键名」，并且跳过本机自己的 gistToken（它本来就在 localStorage、
     // 不在数据本体里，真出现了说明数据被污染了，那也要拦）。
     // ★ 宁可误杀：多拦一次只是「这次没上传成」，漏拦一次是「老板的令牌被 GitHub 撤销」。
-    function findTokenLeak(obj) {
-        // ★ 测试钩子：探针要能**单独**验证两道防线（白名单 / 本函数）。
-        //   两道防线会互相掩护：白名单坏掉但本函数还在时，整次上传被拦掉，
-        //   外面看到的现象和「白名单正常」一模一样 —— 探针就测不出白名单单独失效。
-        //   探针把 globalThis.__wei8NoLeakGuard 置 true 就能临时关掉本函数、只留白名单。
-        //   正常使用时没人设这个标记。
-        if (globalThis.__wei8NoLeakGuard) return null;
+    // v3.28：**剔除**数据里的令牌明文（不是「发现了就中止上传」）。
+    //   背景（v3.27 的设计错误）：v3.26 写成「检出令牌 → return 中止整次上传」，
+    //   结果老板的 `bonjourr` 里本来就带着 `gistToken` 字段（历史遗留/上游某处带进去的），
+    //   于是**每次点「上传备份」都被拦**、功能整个堵死（老板 15:38 报「现在不能上传备份了」，
+    //   并指出「上传备份那边就不要带令牌呀」——说得对）。
+    //   正确做法：**默默把令牌字段从要上传的数据里删掉，然后照常上传**。
+    //   - 不堵死功能：老板永远能上传，只是上传的内容里没有凭据。
+    //   - 不留明文：GitHub secret scanning 扫不到 → 不再撤销令牌。
+    //   - 就地清除：顺带把本机数据里的令牌字段也删了（避免每次都触发剔除）。
+    // 返回被剔除的字段名列表（没剔除则空数组）。
+    function stripTokenLeak(obj) {
+        if (globalThis.__wei8NoLeakGuard) return [];
         var patterns = [
             { name: '经典版令牌(ghp_)', re: /ghp_[A-Za-z0-9]{20,}/ },
             { name: '细粒度令牌(github_pat_)', re: /github_pat_[A-Za-z0-9_]{20,}/ },
         ];
-        try {
-            var hits = [];
-            JSON.stringify(obj, function (k, v) {
-                if (typeof v !== 'string' || !v) return v;
-                for (var i = 0; i < patterns.length; i++) {
-                    if (patterns[i].re.test(v)) { hits.push(k + '(' + patterns[i].name + ')'); break; }
-                }
-                return v;
-            });
-            return hits.length ? hits.join('、') : null;
-        } catch (e) {
-            return null; // 序列化异常不该拦住正常上传
+        var stripped = [];
+        function isToken(v) {
+            if (typeof v !== 'string' || !v) return false;
+            for (var i = 0; i < patterns.length; i++) { if (patterns[i].re.test(v)) return true; }
+            return false;
         }
+        // 先扫顶层键：令牌绝大多数就是直接挂在顶层（gistToken / token / pat …）
+        Object.keys(obj).forEach(function (k) {
+            if (isToken(obj[k])) { delete obj[k]; stripped.push(k); }
+        });
+        // 再扫一层嵌套（wei8Local 之类），顺手摘掉
+        Object.keys(obj).forEach(function (k) {
+            var v = obj[k];
+            if (!v || typeof v !== 'object') return;
+            Object.keys(v).forEach(function (kk) { if (isToken(v[kk])) { delete v[kk]; stripped.push(k + '.' + kk); } });
+        });
+        return stripped;
+    }
+
+    // 兼容旧调用名（探针/注释里有引用），语义 = 「有没有令牌」而非中止。
+    function findTokenLeak(obj) {
+        try {
+            var copy = JSON.parse(JSON.stringify(obj));
+            return stripTokenLeak(copy).join('、') || null;
+        } catch (e) { return null; }
     }
 
     // v3.25：从备份里的 wei8Local 回填本地配置（下载整包覆盖时调用）。
