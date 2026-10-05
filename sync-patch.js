@@ -392,7 +392,7 @@
     document.addEventListener('click', function (e) {
         if (e.target.closest && e.target.closest('#b_gistdown')) {
             e.stopPropagation();
-            showDownloadOverwriteConfirm();
+            downloadOverwrite();   // 拉云端 → 问「覆盖/合并/取消」（v3.29 统一走三选项）
         }
     }, true);
 
@@ -1112,42 +1112,17 @@
     //   · 云端历史落到本机镜像（下次「刷新」历史表完整）
     // 覆盖前弹二次确认（老板拍板：不可逆要确认）。覆盖后本机独有改动没了，只能靠历史表
     // 「按记录还原」找回旧版 —— 确认条里把这句讲清楚。
+    // 「下载还原」按钮（#b_gistdown）—— 手动入口，走同一套「取云端 → 问合并/覆盖」逻辑。
+    // v3.29 之前这里是自己一份 fetch+覆盖的复制品；现在统一走 fetchCloudData/askMergeOrOverwrite，
+    // 免得两套代码各自漂移。
     function downloadOverwrite() {
         var token = readLocal('gistToken');
         var id = cleanId(readLocal('gistId')) || cleanId(window.__wei8Sync.gistId);
         if (!token || !id) { toast('缺少令牌或 Gist，无法下载还原。'); return; }
-        fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token), cache: 'reload' })
-            .then(function (resp) {
-                if (resp.status !== 200) { toast('云端取不到（HTTP ' + resp.status + '）。'); return null; }
-                return resp.json();
-            })
-            .then(function (json) {
-                if (!json) return;
-                var f = Object.values(json.files || {})[0];
-                if (!f || typeof f.content !== 'string') { toast('云端内容读不出来，已放弃。'); return; }
-                var data;
-                try { data = JSON.parse(f.content); } catch (e) { toast('云端不是有效数据，已放弃。'); return; }
-                if (!data || typeof data !== 'object' || !data.linkgroups) {
-                    toast('云端缺必要结构（linkgroups），已放弃（避免把本机清空）。'); return;
-                }
-                // 本地四件套先取出（覆盖后回填）；历史字段取出（落到本机镜像）
-                var backup = data[LOCAL_BACKUP_FIELD] || {};
-                var cloudHist = Array.isArray(data[HIST_FIELD]) ? data[HIST_FIELD] : null;
-                delete data[LOCAL_BACKUP_FIELD]; // 辅助键不进设置数据本体
-                // 整包覆盖（第 3 处写 localStorage['bonjourr']）
-                try {
-                    localStorage.setItem('bonjourr', JSON.stringify(data));
-                    logWrite('设置面板·下载整包覆盖');
-                } catch (e) { toast('写入本机失败，未覆盖。'); return; }
-                applyLocalBackup(backup);          // 令牌/同步类型等跟着还原
-                if (cloudHist) writeMirror(cloudHist); // 云端历史落本机镜像
-                window.__wei8Sync.pullCount = (window.__wei8Sync.pullCount || 0) + 1;
-                window.__wei8Sync.lastPullAt = Date.now();
-                window.__wei8Sync.lastPullStatus = 'overwrite';
-                globalThis.dispatchEvent(new Event('storage')); // 让上游重渲染
-                toast('已用云端那份整包覆盖本机设置（gistId/同步类型已一并还原；令牌不会进备份，换机后需手填一次）。删掉的就保持删掉，不会复活。');
-            })
-            .catch(function () { toast('下载失败：网络异常。'); });
+        fetchCloudData(token, id).then(function (got) {
+            if (!got) { toast('云端取不到（断网或令牌无效），已继续用本机数据。'); return; }
+            askMergeOrOverwrite(got.cloud);
+        });
     }
 
     function removeDownloadConfirm() {
@@ -1169,42 +1144,6 @@
         var opts = document.getElementById('settings-sync-options');
         if (opts) return { node: opts, after: false };
         return null;
-    }
-
-    function showDownloadOverwriteConfirm() {
-        removeDownloadConfirm();
-        var host = downloadConfirmHost();
-        if (!host) return;
-        var bar = document.createElement('div');
-        bar.id = 'wei8-download-confirm';
-        bar.style.fontSize = '0.85em';
-        bar.style.lineHeight = '1.6';
-        bar.style.padding = '0.45em 0.6em';
-        bar.style.marginTop = '0.35em';
-        bar.style.border = '1px solid rgba(128,128,128,.35)';
-        bar.style.borderLeftWidth = '3px';
-        bar.style.borderLeftStyle = 'solid';
-        bar.style.borderLeftColor = 'rgb(var(--accent-color, 41 144 255))';
-        bar.style.borderRadius = '6px';
-        bar.style.background = 'rgba(128,128,128,.10)';
-        if (host.after) host.node.parentNode.insertBefore(bar, host.node.nextSibling);
-        else host.node.appendChild(bar);
-        try { bar.scrollIntoView({ block: 'center' }); } catch (e) { /* 老浏览器不支持就跳过 */ }
-        var tip = document.createElement('div');
-        tip.textContent =
-            '用云端那份「整包覆盖」本机设置？本机独有的改动会被清掉（你删掉的东西保持删掉、不会复活）。' +
-            '覆盖后想找回旧版，只能靠下面历史表「按记录还原」。';
-        bar.appendChild(tip);
-        var row = document.createElement('div');
-        row.style.display = 'flex';
-        row.style.gap = '0.8em';
-        row.style.marginTop = '0.3em';
-        row.appendChild(mkBtn('确认覆盖', function () {
-            removeDownloadConfirm();
-            downloadOverwrite();
-        }));
-        row.appendChild(mkBtn('取消', removeDownloadConfirm));
-        bar.appendChild(row);
     }
 
     // ============ v3.21 手动刷新（取代原自动推送 / 60s 轮询 / 装载期兜底） ============
@@ -1294,11 +1233,225 @@
         });
     }
 
+    // ==================== v3.29：填完令牌 → 自动拉一次云端 ====================
+    // 背景（老板 08:35 拍板）：换设备时打开站点是「出厂预置」，得手动填令牌 + 点「下载还原」
+    //   才能还原成自己那套。他要的是「填完有效令牌就自动拉最近一条 Gist；拉不到就用本机缓存兜底」。
+    // 范围锁死（v3.21 刚砍掉全部自动同步，这里只加**这一下**，绝不越界）：
+    //   触发时机 = **仅**「令牌表单被提交」那一下（#b_gistsync submit）。
+    //   绝不碰「每次打开页面」「每次进设置面板」—— 那两条是 v3.21 砍掉的东西，不请回来。
+    // 断网/令牌失效/Gist 不存在 → **静默用本机数据 + 一句提示**（老板拍板，绝不刷屏报错）。
+    // 数据不一致 → 弹「合并 / 覆盖 / 取消」三选项（老板拍板；一致就不打扰，静默收工）。
+    var AUTO_PULL_DONE = false;   // 一次会话只自动拉一次，防止反复提交令牌反复弹
+
+    function watchTokenSubmit() {
+        var form = document.getElementById('f_gistsync');
+        if (!form) return;
+        // 用捕获阶段监听 submit：不阻止上游自己的处理（它要存 gistToken + 自动 findGistId），
+        // 我们只是**在它存完之后**接着拉一次数据。
+        form.addEventListener('submit', function () {
+            if (AUTO_PULL_DONE) return;
+            var input = document.getElementById('i_gistsync');
+            var token = input ? (input.value || '').trim() : '';
+            if (!token) return;                       // 空令牌 = 老板在「清除令牌」，不拉
+            AUTO_PULL_DONE = true;
+            // **不依赖上游的 findGistId**：它选的是 list[0]（不按时间排序，可能挑到最老那个），
+            // 而且它写 gistId 有网络往返、慢一拍还会失败。这里自己按 updated_at 取最新，
+            // 顺带把上游算出来的 id 当兜底。两条路都拿不到才放弃（不打扰老板）。
+            pickNewestGistId(token).then(function (newestId) {
+                if (newestId) return pullAfterTokenSubmit(token, newestId);
+                // 自己没挑到 → 等上游把它算出来的 gistId 写进来（最多 8 秒）
+                waitForGistId(function (id) {
+                    if (!id) { toast('没找到可用的 Gist，继续用本机数据。'); return; }
+                    pullAfterTokenSubmit(token, id);
+                });
+            });
+        }, true);
+    }
+
+    // 轮询等上游 findGistId 把 gistId 写进 localStorage（最多 ~8 秒）。
+    function waitForGistId(cb) {
+        var t0 = Date.now();
+        (function tick() {
+            var id = cleanId(readLocal('gistId'));
+            if (id) return cb(id);
+            if (Date.now() - t0 > 8000) return cb(null);
+            setTimeout(tick, 400);
+        })();
+    }
+
+    // ★ v3.29：自己按「更新时间」挑最新的那个 Gist，不信上游挑的。
+    //   上游 findGistId 是 `list.filter(私有且有内容)[0]` —— **不排序**，拿的是 API 返回的第一个。
+    //   老板账号下有 3 个 Gist（9-21 / 9-30 / 10-05），一旦上游挑中最早那个，
+    //   换机还原出来的就是**一个月前的旧数据**，而且不报错、很难察觉。
+    //   这里明确按 updated_at 倒序取最新。留作兜底：上游没给出 id 时也走它。
+    function pickNewestGistId(token) {
+        return fetch('https://api.github.com/gists?per_page=100', { headers: gistHeaders(token) })
+            .then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function (list) {
+                var cands = (list || []).filter(function (g) {
+                    return !g.public && g.files && g.files['bonjourr-export.json'] && g.files['bonjourr-export.json'].size > 0;
+                });
+                if (!cands.length) return null;
+                cands.sort(function (a, b) {
+                    return String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+                });
+                return cands[0].id;
+            });
+    }
+
+    // 拉「id 指定的那份」云端数据。失败一律返回 null（调用方统一提示「继续用本机数据」）。
+    // ★ id 由调用方给：watchTokenSubmit 已用 pickNewestGistId 按 updated_at 挑过最新，
+    //   这里**不再重复挑**（第一版重复挑了一次，白多一次 LIST 请求；且给了「用上游 id」的
+    //   冗余分支，会让人以为可能拉错 Gist）。
+    function pullAfterTokenSubmit(token, id) {
+        return fetchCloudData(token, id).then(function (got) {
+            if (!got) return;   // 失败已在 fetchCloudData 里提示过
+            handleCloudData(got.cloud);
+        });
+    }
+
+    // GET 云端数据。失败一律返回 null（调用方已统一提示「继续用本机数据」）。
+    function fetchCloudData(token, id) {
+        return fetch('https://api.github.com/gists/' + id, { headers: gistHeaders(token), cache: 'reload' })
+            .then(function (resp) {
+                if (resp.status !== 200) throw new Error('HTTP ' + resp.status);
+                return resp.json();
+            })
+            .then(function (json) {
+                var f = json && json.files && Object.values(json.files)[0];
+                if (!f || typeof f.content !== 'string') throw new Error('内容读不出来');
+                var cloud;
+                try { cloud = JSON.parse(f.content); } catch (e) { throw new Error('内容不是有效数据'); }
+                if (!cloud || typeof cloud !== 'object' || !cloud.linkgroups) throw new Error('缺 linkgroups');
+                return { cloud: cloud, id: json.id };
+            })
+            .catch(function () { return null; });
+    }
+
+    // 拿到云端数据后：对比 → 空壳直接覆盖 / 一致静默 / 不一致问合并还是覆盖
+    function handleCloudData(cloud) {
+        var cur = readSyncData();
+        var meaningful = cur ? Object.keys(cur).filter(function (k) {
+            return k !== 'about' && k !== 'lang' && k !== 'tabtitle' && k !== 'dateformat';
+        }).length : 0;
+        // 本机几乎是空的 = 换新设备第一次配 → 直接覆盖，不用问
+        if (meaningful === 0) {
+            applyCloudData(cloud, 'replace');
+            toast('已用云端那份还原本机设置（gistId / 同步方式一并带上）。令牌不随备份走，用你刚填的这份。');
+            return;
+        }
+        if (sameData(cur, cloud)) {
+            applyLocalBackup(cloud[LOCAL_BACKUP_FIELD] || {});   // 顺手把 gistId 等补齐
+            toast('本机设置和云端一致，不用还原。');
+            return;
+        }
+        askMergeOrOverwrite(cloud);
+    }
+
+    // 「本机 vs 云端是否实质一致」：比链接键集合 + 几项关键设置。
+    // 不逐字节比整个对象 —— 两个 JSON 里字段顺序/空值差异不算「不一致」，否则永远要问。
+    function sameData(a, b) {
+        function sigLinks(o) {
+            var out = [];
+            Object.keys(o || {}).forEach(function (k) {
+                if (!/^links\d{4}w\d+$/.test(k)) return;
+                var v = o[k] || {};
+                out.push(k + '|' + (v.url || '') + '|' + (v.title || ''));
+            });
+            return out.sort().join('&');
+        }
+        if (sigLinks(a) !== sigLinks(b)) return false;
+        var keys = ['lang', 'dateformat', 'linkstyle', 'linknewtab', 'linksrow', 'greetingsmode', 'searchbar', 'weather', 'backgrounds'];
+        for (var i = 0; i < keys.length; i++) {
+            if (JSON.stringify(a[keys[i]]) !== JSON.stringify(b[keys[i]])) return false;
+        }
+        return true;
+    }
+
+    // 不一致时的三选项确认条：合并 / 覆盖 / 取消
+    function askMergeOrOverwrite(cloud) {
+        removeDownloadConfirm();
+        var host = downloadConfirmHost();
+        if (!host) return;
+        var bar = document.createElement('div');
+        bar.id = 'wei8-download-confirm';
+        bar.style.cssText = 'font-size:.85em;line-height:1.6;padding:.45em .6em;margin-top:.35em;' +
+            'border:1px solid rgba(128,128,128,.35);border-left:3px solid rgb(var(--accent-color,41 144 255));' +
+            'border-radius:6px;background:rgba(128,128,128,.10)';
+        var tip = document.createElement('div');
+        tip.textContent = '本机设置和云端那份不一样。要怎么处理？';
+        bar.appendChild(tip);
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:.8em;margin-top:.3em;flex-wrap:wrap';
+        row.appendChild(mkBtn('用云端覆盖本机', function () {
+            removeDownloadConfirm();
+            applyCloudData(cloud, 'replace');
+            toast('已用云端那份整包覆盖本机（删掉的就保持删掉）。');
+        }));
+        row.appendChild(mkBtn('合并（两边的都留）', function () {
+            removeDownloadConfirm();
+            applyCloudData(cloud, 'merge');
+            toast('已合并：云端独有的补进来，本机独有的保留。');
+        }));
+        row.appendChild(mkBtn('取消', function () {
+            removeDownloadConfirm();
+            toast('没动，继续用本机数据。');
+        }));
+        bar.appendChild(row);
+        if (host.after) host.node.parentNode.insertBefore(bar, host.node.nextSibling);
+        else host.node.appendChild(bar);
+        try { bar.scrollIntoView({ block: 'center' }); } catch (e) { /* 老浏览器不支持就跳过 */ }
+    }
+
+    // 把云端那份落到本机。mode='replace' 整包覆盖 / mode='merge' 顶层键取并集。
+    // 两个分支都在**同一个确认之后**才跑，绝不静默改本机。
+    function applyCloudData(cloud, mode) {
+        var data = JSON.parse(JSON.stringify(cloud));      // 深拷贝，别改云端那份
+        var backup = data[LOCAL_BACKUP_FIELD] || {};
+        var cloudHist = Array.isArray(data[HIST_FIELD]) ? data[HIST_FIELD] : null;
+        delete data[LOCAL_BACKUP_FIELD];
+        delete data[HIST_FIELD];
+        if (mode === 'merge') {
+            var cur = readSyncData() || {};
+            // linkgroups 要**先**处理：它装着「有哪些组、组顺序」（链接本体是顶层 linksXXXXwX 键，
+            //   各自带 parent 指向组名）。若跟着上面的并集循环走，本机新建的组会凭空消失、
+            //   新加的链接会指向不存在的组 → 白加。所以先把本机组名留成副本，并集后再写回。
+            var localGroups = (cur.linkgroups && Array.isArray(cur.linkgroups.groups)) ? cur.linkgroups.groups.slice() : null;
+            // 合并语义 = 顶层键取并集（云端覆盖同名键，本机独有的留下）。
+            // 注意：合并会让「你删掉但云端还有」的条目回来 —— 这是合并的固有代价，
+            //   确认条上已写明，用户自己选。
+            Object.keys(data).forEach(function (k) { cur[k] = data[k]; });
+            if (localGroups) {
+                var gl = localGroups.slice();
+                (data.linkgroups && data.linkgroups.groups || []).forEach(function (g) { if (gl.indexOf(g) < 0) gl.push(g); });
+                cur.linkgroups = Object.assign({}, data.linkgroups, { groups: gl });
+            }
+            data = cur;
+        }
+        // 无论哪种模式，都把令牌类字段从数据本体剔掉（v3.28 铁律：凭据不进数据）
+        stripTokenLeak(data);
+        try {
+            localStorage.setItem('bonjourr', JSON.stringify(data));
+            logWrite('设置面板·' + (mode === 'merge' ? '云端合并' : '下载整包覆盖'));
+        } catch (e) { toast('写入本机失败，没动。'); return; }
+        applyLocalBackup(backup);                    // gistId / 同步方式 / 自定义地址（非机密）
+        if (cloudHist) writeMirror(cloudHist);       // 云端历史落本机镜像
+        window.__wei8Sync.pullCount = (window.__wei8Sync.pullCount || 0) + 1;
+        window.__wei8Sync.lastPullAt = Date.now();
+        window.__wei8Sync.lastPullStatus = mode === 'merge' ? 'merge' : 'overwrite';
+        globalThis.dispatchEvent(new Event('storage'));   // 让上游重渲染
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         // v3.21 大道至简：打开页面不碰服务器、不轮询、不自动恢复。
         // 仅保留手动入口：①「刷新」按钮（主动问一次服务器，展示时间戳与历史）
         //   ② watchVersionChange 换版提示（SW 缓存优先导致落后一版的已知坑）
         addRefreshButton();
         watchVersionChange();
+        // v3.29：填完令牌 → 自动拉一次云端（老板拍板，范围锁死在这一下，不做「每次打开」）
+        watchTokenSubmit();
     });
 })();

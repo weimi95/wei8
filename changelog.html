@@ -186,7 +186,7 @@
     <body>
         <main>
             <header>
-                <h1>wei8 导航站 · 更新日志<span class="badge">v3.28</span></h1>
+                <h1>wei8 导航站 · 更新日志<span class="badge">v3.29</span></h1>
                 <p class="sub">
                     这是一个自用的中文起始页。下面按时间倒序记录每一版改了什么，
                     方便日后回看「某个功能是哪一版加的」。
@@ -195,6 +195,31 @@
 
             <ul class="log">
                 <li class="current">
+                    <span class="ver">v3.29</span><span class="date">2026-10-05</span>
+                    <ul class="changes">
+                        <li>
+                            <strong>填完令牌自动拉一次云端</strong>。换设备打开时是「出厂默认」，
+                            以前得手动填令牌、再点一次「下载还原」才还原成自己那套；
+                            现在<strong>令牌一填完就自动拉最近一条备份</strong>。
+                            断网或令牌无效就继续用本机数据，不会打断你。
+                        </li>
+                        <li>
+                            <strong>只在「填完令牌」这一下触发</strong>，不会每次打开页面就自动同步
+                            ——自动同步会带来「删掉的东西又回来」，那个坑你踩过，所以范围锁死在这里。
+                        </li>
+                        <li>
+                            <strong>会先比一遍</strong>：本机和云端一致就静默收工不打扰；
+                            不一致才问你「用云端覆盖 / 两边合并 / 取消」——
+                            合并会把两边都保留（包括你以前删掉但云端还留着的）。
+                        </li>
+                        <li>
+                            <strong>顺带修了一个隐患</strong>：原程序挑备份时是按列表顺序拿第一个，
+                            不按更新时间排。你有三个备份的话，很可能拿到<strong>最老那个</strong>
+                            （一个月前的数据），而且不报错、很难察觉。现在改成按更新时间取最新的。
+                        </li>
+                    </ul>
+                </li>
+                <li>
                     <span class="ver">v3.28</span><span class="date">2026-10-04</span>
                     <ul class="changes">
                         <li>
